@@ -1,4 +1,4 @@
-# Inkscape2Forza / Inkscape2Forza
+# Inkscape2Forza
 <p align="center">
   <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/00.jpg" alt="show" width="720">
 </p>
