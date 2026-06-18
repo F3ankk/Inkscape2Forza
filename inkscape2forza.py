@@ -178,13 +178,13 @@ def parse_header(header_path):
 def select_folder(title):
     root = tk.Tk()
     root.withdraw()
-    folder_path = filedialog.askdirectory(title=title)
+    folder_path = filedialog.askdirectory(title=title, initialdir=os.getcwd())
     return folder_path
 
 def select_file(title, filetypes):
     root = tk.Tk()
     root.withdraw()
-    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes)
+    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=os.getcwd())
     return file_path
 
 def create_backup(u_dir, gamesave_dir):
@@ -195,9 +195,9 @@ def create_backup(u_dir, gamesave_dir):
     backup_name = f"backup_{timestamp}"
     backup_path_base = os.path.normpath(os.path.join(backup_dir, backup_name))
     
-    print("正在打包备份...")
+    print("正在打包备份... / Processing backup...")
     shutil.make_archive(backup_path_base, 'zip', u_dir)
-    print(f"备份完成: {backup_path_base}.zip")
+    print(f"备份完成 / Backup complete: {backup_path_base}.zip")
 
 def get_target_layer_groups(containers_root):
     folders = glob.glob(os.path.join(containers_root, "LayerGroup_0000_*"))
@@ -225,21 +225,21 @@ def inject_cgroup(target_cgroup, layers_bin_list, last_was_mask):
     try:
         decomp_data = zlib.decompress(zstream)
     except Exception as e:
-        print(f"读取彩绘纹饰分组失败: {e}")
+        print(f"读取彩绘纹饰分组失败 / Failed to read vinly group: {e}")
         return False
         
     idx = decomp_data.find(ANCHOR_BYTES)
     if idx == -1:
-        print("定位第一层图形失败，该彩绘纹饰分组可能不符合注入要求。")
+        print("定位第一层图形失败，该彩绘纹饰分组可能不符合注入要求。 / Failed to locate first layer graphics, the vinly group may not meet injection requirements.")
         return False
         
     original_layer_count = (len(decomp_data) - idx - 2) // 32
     
     if len(layers_bin_list) != original_layer_count:
-        print(f"图层数量不匹配！")
-        print(f"   SVG 有效图层数 : {len(layers_bin_list)}")
-        print(f"   存档图层数 : {original_layer_count}")
-        print("为了您的存档安全，请选择一个图层数量一致的彩绘纹饰分组。")
+        print(f"图层数量不匹配！ / Layer count mismatch!")
+        print(f"   SVG 有效图层数 / Valid SVG layers: {len(layers_bin_list)}")
+        print(f"   绘纹饰分组图层数 / Vinly group layers: {original_layer_count}")
+        print("为了您的存档安全，请选择一个图层数量一致的彩绘纹饰分组。 / For safety, please select a vinly group with a matching layer count.")
         return False
     
     header_data = decomp_data[:idx]
@@ -266,81 +266,79 @@ def inject_cgroup(target_cgroup, layers_bin_list, last_was_mask):
     except: pass
     os.replace(temp_cgroup, target_cgroup)
     
-    print(f"注入成功")
+    print(f"注入成功 / Injection successful")
     return True
 
 def main():
     print("")
     
-    print("[1/4] 请选择您的 GameSave 文件夹...")
+    print("[1/4] 请选择您的 GameSave 文件夹... / Please select your GameSave folder...")
     gamesave_dir = select_folder("GameSave")
     if not gamesave_dir:
-        print("已取消")
+        print("已取消 / Cancelled")
         return
         
     pgs_dir = os.path.join(gamesave_dir, "pgs")
     if not os.path.exists(pgs_dir):
-        print("这不是有效的存档文件夹")
+        print("这不是有效的存档文件夹 / This is not a valid GameSave folder")
         return
         
     # search for player data
     u_folders = [f for f in os.listdir(pgs_dir) if f.startswith("u_") and os.path.isdir(os.path.join(pgs_dir, f))]
     if not u_folders:
-        print("未找到玩家数据")
+        print("未找到玩家数据 / No player data found")
         return
         
     u_dir = os.path.join(pgs_dir, u_folders[0])
     containers_root = os.path.join(u_dir, "current", "ContainersRoot")
     
     if not os.path.exists(containers_root):
-        print("未找到数据根目录")
+        print("未找到数据根目录 / No root directory found")
         return
 
-    # 打印时统一规范化路径显示
-    print(f"已定位到存档: {os.path.normpath(u_dir)}")
+    print(f"已定位到存档 / GameSave: {os.path.normpath(u_dir)}")
 
     # backup
-    print("[2/4] 为了您的数据安全，建议操作前备份存档。是否进行？")
-    backup_choice = input("1. 备份\n2. 不备份\n请输入数字选择: ").strip()
+    print("[2/4] 为了您的数据安全，建议操作前备份存档。是否进行？ / For your data safety, it's recommended to backup before proceeding. Do you want to backup?")
+    backup_choice = input("1. 备份 / Backup\n2. 不备份 / Don't backup\n选择 / Choose: ").strip()
     
     if backup_choice == "1":
         create_backup(u_dir, gamesave_dir)
     else:
-        print("已跳过")
+        print("已跳过 / Skipped")
 
-    print("[3/4] 请选择要注入的 Inkscape SVG 文件...")
-    svg_path = select_file("Inkscape SVG", [("SVG 文件", "*.svg")])
+    print("[3/4] 请选择要注入的 Inkscape SVG 文件... / Please select your Inkscape SVG file to inject...")
+    svg_path = select_file("Inkscape SVG", [("SVG", "*.svg")])
     if not svg_path:
-        print("已取消")
+        print("已取消 / Cancelled")
         return
         
-    print(f"正在解析 SVG: {os.path.basename(svg_path)}")
+    print(f"正在解析 SVG / Parsing SVG: {os.path.basename(svg_path)}")
     try:
         layers_bin_list, prev_was_mask, total_nodes = process_svg(svg_path)
-        print(f"识别到 {total_nodes} 个元素，过滤后有效图层数：{len(layers_bin_list)}")
+        print(f"识别到 {total_nodes} 个元素，过滤后有效图层数：{len(layers_bin_list)} / Found {total_nodes} elements, {len(layers_bin_list)} valid layers after filtering")
     except Exception as e:
-        print(f"解析失败: {e}")
+        print(f"解析失败 / Failed to parse SVG: {e}")
         return
 
     # gamesave injection
-    print("[4/4] 扫描可写入的彩绘纹饰分组...")
+    print("[4/4] 扫描可写入的彩绘纹饰分组... / Scanning for writable vinly groups...")
     target_groups = get_target_layer_groups(containers_root)
     
     if not target_groups:
-        print("未找到任何可用彩绘纹饰分组，请先在游戏内创建！")
+        print("未找到任何可用彩绘纹饰分组，请先在游戏内创建！ / No available vinly groups found, please create one in the game first!")
         return
 
     while True:
-        print("请选择要被覆盖注入的彩绘纹饰分组：")
+        print("请选择要被覆盖注入的彩绘纹饰分组 / Please select the vinly group to be overwritten:")
         print("-" * 10)
         for i, group in enumerate(target_groups):
             print(f"{i+1}. {group['title']} - {group['author']}")
         print("-" * 10)
-        print("输入 q 退出")
         
-        choice = input("请输入对应的序号: ").strip()
-        if choice.lower() == 'q':
-            print("已退出")
+        choice = input("请输入对应的序号或输入c取消 / Choose or 'c' to cancel: ").strip()
+        if choice.lower() == 'c':
+            print("已取消 / Canceled")
             break
             
         try:
@@ -349,16 +347,23 @@ def main():
                 selected_group = target_groups[choice_idx]
                 target_cgroup_path = selected_group["path"]
                 
-                print(f"准备注入到: {selected_group['title']}")
+                print(f"准备注入到 / Inject into: {selected_group['title']}")
                 if inject_cgroup(target_cgroup_path, layers_bin_list, prev_was_mask):
-                    print("注入完成！请回到游戏，打开该彩绘纹饰分组，解组全部图层并重新保存")
+                    print("注入完成！请回到游戏，打开该彩绘纹饰分组，解组全部图层并重新保存 / Injection complete! Please return to the game, open the vinly group, ungroup all layers and save again.")
                     break
                 else:
-                    print("将返回存档选择列表...")
+                    print("将返回彩绘纹饰分组选择列表... / Returning to vinly group selection...")
             else:
-                print("输入无效")
+                print("输入无效 / Invalid input")
         except ValueError:
-            print("输入无效")
+            print("输入无效 / Invalid input")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n已强制取消 / Force cancelled")
+    except Exception as e:
+        print(f"\n发生未捕获的错误 / Uncaught error: {e}")
+    finally:
+        input("\n按回车键退出... / Press Enter to exit...")
