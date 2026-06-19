@@ -134,7 +134,12 @@ def process_svg(svg_path):
         url_match = re.search(r'url\((\#[^)]+)\)', style_str) or re.search(r'url\((\#[^)]+)\)', fill_attr)
         resolved_href = pattern_dict.get(url_match.group(1), '').lower() if url_match else ""
         
-        is_current_mask = elem_id.startswith('mask') or 'destination-out' in style_str or 'mask_indicator' in resolved_href
+        is_current_mask = (
+            elem_id.startswith('mask') or 
+            'destination-out' in style_str or 
+            'mask_indicator' in resolved_href or
+            (url_match and 'mask_indicator' in url_match.group(1).lower())
+        )
         if (('fill:none' in style_str.replace(' ', '') or fill_attr == 'none') or 
             ('display:none' in style_str.replace(' ', '') or elem.get('display', '').lower() == 'none')) and not is_current_mask:
             continue
@@ -300,7 +305,7 @@ def workflow_create_template():
     template_path = get_resource_path("inkscape_template.svg.tmp")
     
     if not os.path.exists(template_path):
-        print(f"找不到内部模板文件 / Cannot find internal template file.")
+        print(f"错误: 找不到内部模板文件 / Error: Cannot find internal template file.")
         print(f"Path searched: {template_path}")
         return
         
@@ -321,16 +326,16 @@ def workflow_create_template():
         print(f"保存失败 / Failed to save: {e}")
 
 def workflow_geometrize_to_svg():
-    print("\n[1/3] 请选择 Geometrize JSON 文件... / Please select Geometrize JSON file...")
-    json_path = select_file("Geometrize JSON", [("JSON", "*.json")])
+    print("\n[1/3] 请选择 Geometrize 导出的 JSON 文件... / Please select Geometrize JSON file...")
+    json_path = select_file("Geometrize JSON", [("JSON 文件", "*.json")])
     if not json_path:
         print("已取消 / Cancelled")
         return
         
-    print("[2/3] 正在生成模板... / Generating template...")
+    print("[2/3] 正在加载内部 SVG 模板进行合成... / Loading internal SVG template for synthesis...")
     template_path = get_resource_path("inkscape_template.svg.tmp")
     if not os.path.exists(template_path):
-        print(f"找不到内部模板文件 / Cannot find internal template file.")
+        print(f"错误: 找不到内部模板文件 / Error: Cannot find internal template file.")
         return
         
     try:
@@ -349,10 +354,10 @@ def workflow_geometrize_to_svg():
         print(f"读取 JSON 失败 / Failed to read JSON: {e}")
         return
         
-    print("[3/3] 请选择模板保存位置... / Please select save location for template...")
+    print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
     save_path = save_file(
-        title="保存由 Geometrize 生成的模板 / Save generated template", 
-        filetypes=[("SVG", "*.svg")], 
+        title="保存由 Geometrize 生成的 SVG / Save generated SVG", 
+        filetypes=[("SVG 文件", "*.svg")], 
         initialfile="Geometrize_Livery.svg"
     )
     if not save_path:
@@ -506,17 +511,17 @@ def workflow_geometrize_to_svg():
                 
                 m_w = 2*hw + T_left + T_right
                 m_h = T_top
-                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy - hh - m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_top"))
+                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy - hh - m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_top"))
                 
                 m_h = T_bottom
-                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy + hh + m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_bottom"))
+                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy + hh + m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_bottom"))
                 
                 m_w = T_left
                 m_h = 2*hh
-                deferred_masks.append((svg_cx - hw - m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_left"))
+                deferred_masks.append((svg_cx - hw - m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_left"))
                 
                 m_w = T_right
-                deferred_masks.append((svg_cx + hw + m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_right"))
+                deferred_masks.append((svg_cx + hw + m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_right"))
                 
                 valid_count += 4
                 continue
@@ -531,11 +536,11 @@ def workflow_geometrize_to_svg():
             append_shape(*m_args)
             
         tree.write(save_path, encoding="utf-8", xml_declaration=True)
-        print(f"\n成功写入 {valid_count} 个图形。文件已保存在:\n  {os.path.normpath(save_path)}")
-        print(f"Successfully wrote {valid_count} shapes. File saved to:\n  {os.path.normpath(save_path)}")
+        print(f"\n🎉 完美合成！成功写入 {valid_count} 个图形。文件已保存在:\n  {os.path.normpath(save_path)}")
+        print("💡 提示: 接下来你可以打开生成的 SVG 进行手动微调，确认无误后使用功能 3 将其注入游戏存档！")
         
     except Exception as e:
-        print(f"转换过程中发生错误 / Conversion error: {e}")
+        print(f"❌ 转换过程中发生错误 / Conversion error: {e}")
 
 def workflow_inject_svg():
     print("\n[1/4] 请选择您的 GameSave 文件夹... / Please select your GameSave folder...")
@@ -567,7 +572,7 @@ def workflow_inject_svg():
     backup_choice = input("1. 备份 / Backup\n2. 不备份 / Don't backup\n输入 q 退出程序 / 'q' to quit\n选择 / Choose: ").strip().lower()
     
     if backup_choice in ('q', 'c', 'exit', 'quit'):
-        print("\n已退出 / Quit")
+        print("\n退出程序 / Exiting program...")
         sys.exit(0)
     elif backup_choice == "1":
         create_backup(u_dir, gamesave_dir)
@@ -641,7 +646,7 @@ def main():
         elif choice == '3':
             workflow_inject_svg()
         elif choice in ('q', 'c', 'exit', 'quit'):
-            print("\n已退出 / Quit")
+            print("\n退出程序 / Exiting program...")
             sys.exit(0)
         else:
             print("\n无效输入，请重新选择 / Invalid input, please try again.")
@@ -650,10 +655,10 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n已退出 / Quit")
+        print("\n已强制取消 / Force cancelled")
         sys.exit(0)
     except SystemExit:
         pass
     except Exception as e:
-        print(f"\n发生未知错误 / Uncaught error: {e}")
+        print(f"\n发生未捕获的错误 / Uncaught error: {e}")
         input("\n按回车键退出... / Press Enter to exit...")
