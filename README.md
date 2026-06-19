@@ -35,6 +35,16 @@ This project aims to bypass FH6’s clumsy built‑in editor by enabling desktop
 下载本项目提供的 [Inkscape SVG 模板文件](https://github.com/F3ankk/Inkscape2Forza/blob/main/inkscape_template.svg)并打开。模板默认画布为 `1920x1080`。你可以将其另存为你的工作副本。  
 Download and open the [Inkscape SVG template file](https://github.com/F3ankk/Inkscape2Forza/blob/main/inkscape_template.svg) included in this project. The default canvas size is `1920x1080`. Save a working copy for your project.
 
+### 更新 / Update
+
+你现在可以直接使用工具内第一项功能生成空白模板，或使用 Geometrize JSON 生成模板。测试使用[forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu)，目前仅支持使用旋转椭圆生成的 Geometrize JSON。
+You can now generate a blank template directly using the first feature in the tool, or generate a template from a Geometrize JSON file. Tested with the [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu), currently supports only Geometrize JSON files with rotated ellipses.
+<p align="center">
+  <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/04.jpg" alt="template_generate" width="720">
+</p>
+
+~~(蓝月痴收收味)~~
+
 ### 2. 编辑规范 / Editing Rules
 
 请打开 Inkscape 的 **符号库 (Symbols)** 面板来调出基础图形。  
@@ -93,7 +103,7 @@ After finishing your design in Inkscape, follow these steps to inject it into th
 1. **游戏内占位准备**：打开 FH6 彩绘纹饰分组编辑器，新建一个分组，并**放置与你 SVG 文件中有效图层同等数量的默认圆形图层**。  
    **Prepare placeholders**: In FH6’s vinyl group editor, create a new group and add **the same number of default circles** as your SVG’s valid layers.
    <p align="center">
-     <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/01.jpg" alt="placeholder_vinlygroup" width="480">
+     <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/01.jpg" alt="placeholder_vinylgroup" width="480">
    </p>
 2. **保存占位符**：给它取一个简单易记的名字，并确保共享选项为**私密**。  
    **Save the placeholder**: Name it something simple and set sharing to **private**.

@@ -8,11 +8,18 @@ import shutil
 import zipfile
 import datetime
 import glob
+import sys
+import json
 import tkinter as tk
 from tkinter import filedialog
 
 # config
 ANCHOR_BYTES = b"\x00\x02\x66\x00"
+
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
 def quantize_alpha(a):
     if a >= 255: return 255
@@ -175,16 +182,33 @@ def parse_header(header_path):
     except Exception:
         return "Unknown", "Unknown"
 
+# ================= UI & Workflow Helpers =================
+
 def select_folder(title):
     root = tk.Tk()
     root.withdraw()
     folder_path = filedialog.askdirectory(title=title, initialdir=os.getcwd())
+    root.destroy()
     return folder_path
 
 def select_file(title, filetypes):
     root = tk.Tk()
     root.withdraw()
     file_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=os.getcwd())
+    root.destroy()
+    return file_path
+
+def save_file(title, filetypes, initialfile):
+    root = tk.Tk()
+    root.withdraw()
+    file_path = filedialog.asksaveasfilename(
+        title=title, 
+        filetypes=filetypes, 
+        initialfile=initialfile, 
+        initialdir=os.getcwd(),
+        defaultextension=".svg"
+    )
+    root.destroy()
     return file_path
 
 def create_backup(u_dir, gamesave_dir):
@@ -225,12 +249,12 @@ def inject_cgroup(target_cgroup, layers_bin_list, last_was_mask):
     try:
         decomp_data = zlib.decompress(zstream)
     except Exception as e:
-        print(f"读取彩绘纹饰分组失败 / Failed to read vinly group: {e}")
+        print(f"读取彩绘纹饰分组失败 / Failed to read vinyl group: {e}")
         return False
         
     idx = decomp_data.find(ANCHOR_BYTES)
     if idx == -1:
-        print("定位第一层图形失败，该彩绘纹饰分组可能不符合注入要求。 / Failed to locate first layer graphics, the vinly group may not meet injection requirements.")
+        print("定位第一层图形失败，该彩绘纹饰分组可能不符合注入要求。 / Failed to locate first layer graphics, the vinyl group may not meet injection requirements.")
         return False
         
     original_layer_count = (len(decomp_data) - idx - 2) // 32
@@ -238,8 +262,8 @@ def inject_cgroup(target_cgroup, layers_bin_list, last_was_mask):
     if len(layers_bin_list) != original_layer_count:
         print(f"图层数量不匹配！ / Layer count mismatch!")
         print(f"   SVG 有效图层数 / Valid SVG layers: {len(layers_bin_list)}")
-        print(f"   绘纹饰分组图层数 / Vinly group layers: {original_layer_count}")
-        print("为了您的存档安全，请选择一个图层数量一致的彩绘纹饰分组。 / For safety, please select a vinly group with a matching layer count.")
+        print(f"   绘纹饰分组图层数 / vinyl group layers: {original_layer_count}")
+        print("为了您的存档安全，请选择一个图层数量一致的彩绘纹饰分组。 / For safety, please select a vinyl group with a matching layer count.")
         return False
     
     header_data = decomp_data[:idx]
@@ -269,10 +293,252 @@ def inject_cgroup(target_cgroup, layers_bin_list, last_was_mask):
     print(f"注入成功 / Injection successful")
     return True
 
-def main():
-    print("")
+# ================= Workflows =================
+
+def workflow_create_template():
+    print("\n准备建立新的空白 SVG 模板... / Preparing to create a new blank SVG template...")
+    template_path = get_resource_path("inkscape_template.svg.tmp")
     
-    print("[1/4] 请选择您的 GameSave 文件夹... / Please select your GameSave folder...")
+    if not os.path.exists(template_path):
+        print(f"找不到内部模板文件 / Cannot find internal template file.")
+        print(f"Path searched: {template_path}")
+        return
+        
+    save_path = save_file(
+        title="保存空白模板 / Save Blank Template", 
+        filetypes=[("SVG", "*.svg")], 
+        initialfile="My_Forza_VinylGroup.svg"
+    )
+    
+    if not save_path:
+        print("已取消 / Cancelled")
+        return
+        
+    try:
+        shutil.copy2(template_path, save_path)
+        print(f"模板已成功保存至 / Template successfully saved to:\n  {os.path.normpath(save_path)}")
+    except Exception as e:
+        print(f"保存失败 / Failed to save: {e}")
+
+def workflow_geometrize_to_svg():
+    print("\n[1/3] 请选择 Geometrize JSON 文件... / Please select Geometrize JSON file...")
+    json_path = select_file("Geometrize JSON", [("JSON", "*.json")])
+    if not json_path:
+        print("已取消 / Cancelled")
+        return
+        
+    print("[2/3] 正在生成模板... / Generating template...")
+    template_path = get_resource_path("inkscape_template.svg.tmp")
+    if not os.path.exists(template_path):
+        print(f"找不到内部模板文件 / Cannot find internal template file.")
+        return
+        
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            geo_data = json.load(f)
+            
+        shapes = geo_data.get("shapes", geo_data if isinstance(geo_data, list) else [])
+        if isinstance(geo_data, dict) and "shapes" not in geo_data:
+            shapes = []
+            
+        if not shapes:
+            print("错误: JSON 文件中没有找到有效的形状数据 / Error: No valid shapes found in JSON.")
+            return
+            
+    except Exception as e:
+        print(f"读取 JSON 失败 / Failed to read JSON: {e}")
+        return
+        
+    print("[3/3] 请选择模板保存位置... / Please select save location for template...")
+    save_path = save_file(
+        title="保存由 Geometrize 生成的模板 / Save generated template", 
+        filetypes=[("SVG", "*.svg")], 
+        initialfile="Geometrize_Livery.svg"
+    )
+    if not save_path:
+        print("已取消 / Cancelled")
+        return
+
+    try:
+        ET.register_namespace('', 'http://www.w3.org/2000/svg')
+        ET.register_namespace('inkscape', 'http://www.inkscape.org/namespaces/inkscape')
+        ET.register_namespace('sodipodi', 'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd')
+        ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
+        
+        tree = ET.parse(template_path)
+        root = tree.getroot()
+        
+        canvas_w = float(root.get('width', '1920').replace('px', '').strip())
+        canvas_h = float(root.get('height', '1080').replace('px', '').strip())
+        
+        symbol_dict = {}
+        for elem in root.iter():
+            if elem.tag.endswith('symbol'):
+                symbol_id = elem.get('id')
+                viewbox_str = elem.get('viewBox')
+                if symbol_id and viewbox_str:
+                    vb = viewbox_str.split()
+                    if len(vb) == 4: 
+                        symbol_dict[f"#{symbol_id}"] = (float(vb[0]), float(vb[1]))
+                        
+        rect_href, circle_href = None, None
+        for k in symbol_dict.keys():
+            if k.endswith('_w101'): rect_href = k
+            elif k.endswith('_w102'): circle_href = k
+            
+        if not rect_href or not circle_href:
+            print("错误: 模板库中找不到基础矩形(w101)或圆形(w102)的符号引用。 / Error: Cannot find base shape symbols in template.")
+            return
+            
+        layer1 = root.find('.//{http://www.w3.org/2000/svg}g[@id="layer1"]')
+        target_container = layer1 if layer1 is not None else root
+        
+        def append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_val, opacity_val, href, node_id):
+            min_x, min_y = symbol_dict.get(href, (0.0, 0.0))
+            rad = math.radians(rot_deg)
+            cos_r, sin_r = math.cos(rad), math.sin(rad)
+            
+            ma = sx * cos_r
+            mb = -sx * sin_r
+            mc = sy * sin_r
+            md = sy * cos_r
+            
+            me = svg_cx + ma * min_x + mc * min_y
+            mf = svg_cy + mb * min_x + md * min_y
+            
+            use_elem = ET.Element('{http://www.w3.org/2000/svg}use')
+            use_elem.set('{http://www.w3.org/1999/xlink}href', href)
+            use_elem.set('x', '0')
+            use_elem.set('y', '0')
+            use_elem.set('transform', f"matrix({ma:.6f},{mb:.6f},{mc:.6f},{md:.6f},{me:.6f},{mf:.6f})")
+            use_elem.set('style', f"fill:{fill_val}; opacity:{opacity_val};")
+            use_elem.set('id', node_id)
+            target_container.append(use_elem)
+
+        geo_w, geo_h = 2048.0, 2048.0
+        for shape in shapes:
+            type_code = shape.get("type")
+            color = shape.get("color", [])
+            data = shape.get("data", [])
+            if type_code == 1 and len(color) >= 4 and color[3] == 0 and len(data) >= 4:
+                geo_w = float(data[2])
+                geo_h = float(data[3])
+                break
+
+        min_ext_x, max_ext_x = float('inf'), float('-inf')
+        min_ext_y, max_ext_y = float('inf'), float('-inf')
+        has_valid_shapes = False
+        
+        for shape in shapes:
+            type_code = shape.get("type")
+            data = shape.get("data", [])
+            if len(data) >= 4 and type_code in (1, 16):
+                has_valid_shapes = True
+                if type_code == 1:
+                    geo_cx = float(data[0]) + float(data[2]) / 2.0
+                    geo_cy = float(data[1]) + float(data[3]) / 2.0
+                    hw = float(data[2]) / 2.0
+                    hh = float(data[3]) / 2.0
+                else:
+                    geo_cx = float(data[0])
+                    geo_cy = float(data[1])
+                    hw = float(data[2])
+                    hh = float(data[3])
+                    
+                radius = math.hypot(hw, hh)
+                min_ext_x = min(min_ext_x, geo_cx - radius)
+                max_ext_x = max(max_ext_x, geo_cx + radius)
+                min_ext_y = min(min_ext_y, geo_cy - radius)
+                max_ext_y = max(max_ext_y, geo_cy + radius)
+                
+        if not has_valid_shapes:
+            min_ext_x, max_ext_x, min_ext_y, max_ext_y = 0.0, 0.0, 0.0, 0.0
+
+        valid_count = 0
+        deferred_masks = []
+        
+        for idx, shape in enumerate(shapes):
+            type_code = shape.get("type")
+            
+            if type_code not in (1, 16):
+                print(f"跳过不支持的图形类型 (index {idx}): type {type_code}")
+                continue
+                
+            data = shape.get("data", [])
+            if len(data) < 4:
+                continue
+                
+            color = shape.get("color", [255, 255, 255, 255])
+            if len(color) < 4: color.append(255)
+            r, g, b, a = [max(0, min(255, int(v))) for v in color]
+            
+            if type_code == 1:
+                geo_cx = float(data[0]) + float(data[2]) / 2.0
+                geo_cy = float(data[1]) + float(data[3]) / 2.0
+                sx = float(data[2]) / 127.0
+                sy = float(data[3]) / 127.0
+                rot_deg = float(data[4]) if len(data) >= 5 else 0.0
+                href = rect_href
+            else: # type == 16
+                geo_cx = float(data[0])
+                geo_cy = float(data[1])
+                sx = float(data[2]) / 63.0
+                sy = float(data[3]) / 63.0
+                rot_deg = (360.0 - float(data[4])) % 360.0 if len(data) >= 5 else 0.0
+                href = circle_href
+                
+            svg_cx = geo_cx + (canvas_w / 2.0 - geo_w / 2.0)
+            svg_cy = geo_cy + (canvas_h / 2.0 - geo_h / 2.0)
+            
+            if type_code == 1 and a == 0:
+                hw = float(data[2]) / 2.0
+                hh = float(data[3]) / 2.0
+                
+                svg_min_ext_x = min_ext_x + (canvas_w / 2.0 - geo_w / 2.0)
+                svg_max_ext_x = max_ext_x + (canvas_w / 2.0 - geo_w / 2.0)
+                svg_min_ext_y = min_ext_y + (canvas_h / 2.0 - geo_h / 2.0)
+                svg_max_ext_y = max_ext_y + (canvas_h / 2.0 - geo_h / 2.0)
+                
+                T_top = max(10.0, (svg_cy - hh) - svg_min_ext_y + 20.0)
+                T_bottom = max(10.0, svg_max_ext_y - (svg_cy + hh) + 20.0)
+                T_left = max(10.0, (svg_cx - hw) - svg_min_ext_x + 20.0)
+                T_right = max(10.0, svg_max_ext_x - (svg_cx + hw) + 20.0)
+                
+                m_w = 2*hw + T_left + T_right
+                m_h = T_top
+                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy - hh - m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_top"))
+                
+                m_h = T_bottom
+                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy + hh + m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_bottom"))
+                
+                m_w = T_left
+                m_h = 2*hh
+                deferred_masks.append((svg_cx - hw - m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_left"))
+                
+                m_w = T_right
+                deferred_masks.append((svg_cx + hw + m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"geo_mask_{idx}_right"))
+                
+                valid_count += 4
+                continue
+                
+            fill_hex = f"#{r:02x}{g:02x}{b:02x}"
+            opacity = round(a / 255.0, 4)
+                
+            append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_hex, opacity, href, f"geo_shape_{idx}")
+            valid_count += 1
+            
+        for m_args in deferred_masks:
+            append_shape(*m_args)
+            
+        tree.write(save_path, encoding="utf-8", xml_declaration=True)
+        print(f"\n成功写入 {valid_count} 个图形。文件已保存在:\n  {os.path.normpath(save_path)}")
+        print(f"Successfully wrote {valid_count} shapes. File saved to:\n  {os.path.normpath(save_path)}")
+        
+    except Exception as e:
+        print(f"转换过程中发生错误 / Conversion error: {e}")
+
+def workflow_inject_svg():
+    print("\n[1/4] 请选择您的 GameSave 文件夹... / Please select your GameSave folder...")
     gamesave_dir = select_folder("GameSave")
     if not gamesave_dir:
         print("已取消 / Cancelled")
@@ -283,7 +549,6 @@ def main():
         print("这不是有效的存档文件夹 / This is not a valid GameSave folder")
         return
         
-    # search for player data
     u_folders = [f for f in os.listdir(pgs_dir) if f.startswith("u_") and os.path.isdir(os.path.join(pgs_dir, f))]
     if not u_folders:
         print("未找到玩家数据 / No player data found")
@@ -298,11 +563,13 @@ def main():
 
     print(f"已定位到存档 / GameSave: {os.path.normpath(u_dir)}")
 
-    # backup
     print("[2/4] 为了您的数据安全，建议操作前备份存档。是否进行？ / For your data safety, it's recommended to backup before proceeding. Do you want to backup?")
-    backup_choice = input("1. 备份 / Backup\n2. 不备份 / Don't backup\n选择 / Choose: ").strip()
+    backup_choice = input("1. 备份 / Backup\n2. 不备份 / Don't backup\n输入 q 退出程序 / 'q' to quit\n选择 / Choose: ").strip().lower()
     
-    if backup_choice == "1":
+    if backup_choice in ('q', 'c', 'exit', 'quit'):
+        print("\n已退出 / Quit")
+        sys.exit(0)
+    elif backup_choice == "1":
         create_backup(u_dir, gamesave_dir)
     else:
         print("已跳过 / Skipped")
@@ -321,25 +588,24 @@ def main():
         print(f"解析失败 / Failed to parse SVG: {e}")
         return
 
-    # gamesave injection
-    print("[4/4] 扫描可写入的彩绘纹饰分组... / Scanning for writable vinly groups...")
+    print("[4/4] 扫描可写入的彩绘纹饰分组... / Scanning for writable vinyl groups...")
     target_groups = get_target_layer_groups(containers_root)
     
     if not target_groups:
-        print("未找到任何可用彩绘纹饰分组，请先在游戏内创建！ / No available vinly groups found, please create one in the game first!")
+        print("未找到任何可用彩绘纹饰分组，请先在游戏内创建！ / No available vinyl groups found, please create one in the game first!")
         return
 
     while True:
-        print("请选择要被覆盖注入的彩绘纹饰分组 / Please select the vinly group to be overwritten:")
+        print("\n请选择要被覆盖注入的彩绘纹饰分组 / Please select the vinyl group to be overwritten:")
         print("-" * 10)
         for i, group in enumerate(target_groups):
             print(f"{i+1}. {group['title']} - {group['author']}")
         print("-" * 10)
         
-        choice = input("请输入对应的序号或输入c取消 / Choose or 'c' to cancel: ").strip()
-        if choice.lower() == 'c':
-            print("已取消 / Canceled")
-            break
+        choice = input("请输入对应的序号或输入 q 退出程序 / Choose or 'q' to quit: ").strip().lower()
+        if choice in ('q', 'c', 'exit', 'quit'):
+            print("\n退出程序 / Exiting program...")
+            sys.exit(0)
             
         try:
             choice_idx = int(choice) - 1
@@ -349,21 +615,45 @@ def main():
                 
                 print(f"准备注入到 / Inject into: {selected_group['title']}")
                 if inject_cgroup(target_cgroup_path, layers_bin_list, prev_was_mask):
-                    print("注入完成！请回到游戏，打开该彩绘纹饰分组，解组全部图层并重新保存 / Injection complete! Please return to the game, open the vinly group, ungroup all layers and save again.")
+                    print("注入完成！请回到游戏，打开该彩绘纹饰分组，解组全部图层并重新保存 / Injection complete! Please return to the game, open the vinyl group, ungroup all layers and save again.")
                     break
                 else:
-                    print("将返回彩绘纹饰分组选择列表... / Returning to vinly group selection...")
+                    print("将返回彩绘纹饰分组选择列表... / Returning to vinyl group selection...")
             else:
                 print("输入无效 / Invalid input")
         except ValueError:
             print("输入无效 / Invalid input")
 
+def main():
+    while True:
+        print("\n=== 请选择你的操作 / Please select your operation ===")
+        print("1. 建立新的空白 Inkscape SVG 模板 / Create new blank Inkscape SVG template")
+        print("2. 从 Geometrize JSON 建立 Inkscape SVG 模板 / Create Inkscape SVG from Geometrize JSON")
+        print("3. 将 Inkscape SVG 导入到 FH6 存档 / Inject Inkscape SVG into FH6 save")
+        print("Q. 退出 / Quit")
+        
+        choice = input("\n输入对应序号 / Enter selection: ").strip().lower()
+        
+        if choice == '1':
+            workflow_create_template()
+        elif choice == '2':
+            workflow_geometrize_to_svg()
+        elif choice == '3':
+            workflow_inject_svg()
+        elif choice in ('q', 'c', 'exit', 'quit'):
+            print("\n已退出 / Quit")
+            sys.exit(0)
+        else:
+            print("\n无效输入，请重新选择 / Invalid input, please try again.")
+
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n已强制取消 / Force cancelled")
+        print("\n已退出 / Quit")
+        sys.exit(0)
+    except SystemExit:
+        pass
     except Exception as e:
-        print(f"\n发生未捕获的错误 / Uncaught error: {e}")
-    finally:
+        print(f"\n发生未知错误 / Uncaught error: {e}")
         input("\n按回车键退出... / Press Enter to exit...")

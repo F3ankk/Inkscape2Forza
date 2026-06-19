@@ -120,7 +120,7 @@ def parse_transform(transform_str):
 
 def decompose_matrix(a, b, c, d, e, f, min_x, min_y, canvas_w, canvas_h):
     """
-    SVG matrix -> ForzaTech vinly layers
+    SVG matrix -> ForzaTech vinyl layers
     """
     real_svg_cx = a * (-min_x) + c * (-min_y) + e
     real_svg_cy = b * (-min_x) + d * (-min_y) + f
@@ -286,7 +286,7 @@ def main():
         
     idx = decomp_data.find(ANCHOR_BYTES)
     if idx == -1:
-        print("Cannot find the initial anchor point for first layer! Please confirm that you are using a valid vinly group!")
+        print("Cannot find the initial anchor point for first layer! Please confirm that you are using a valid vinyl group!")
         return
         
     print(f"Located first layer, offset: {idx}")
@@ -294,7 +294,7 @@ def main():
     original_layer_data_len = len(decomp_data) - idx - 2
     original_layer_count = original_layer_data_len // 32
     
-    print(f"SVG valid layer count [{len(layers_bin_list)}] - vinly group layer count [{original_layer_count}]。")
+    print(f"SVG valid layer count [{len(layers_bin_list)}] - vinyl group layer count [{original_layer_count}]。")
     
     if len(layers_bin_list) != original_layer_count:
         print("Valid layer count mismatch, injection terminated for safety!")
