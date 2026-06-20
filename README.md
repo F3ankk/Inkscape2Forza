@@ -37,7 +37,7 @@ Download and open the [Inkscape SVG template file](https://github.com/F3ankk/Ink
 
 ### 更新 / Update
 
-你现在可以直接使用工具内第一项功能生成空白模板，或使用 Geometrize JSON 生成模板。测试使用[forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu)，目前仅支持使用旋转椭圆生成的 Geometrize JSON。
+你现在可以直接使用工具内第一项功能生成空白模板，或使用 Geometrize JSON 生成模板。测试使用[forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu)，目前仅支持使用旋转椭圆生成的 Geometrize JSON。  
 You can now generate a blank template directly using the first feature in the tool, or generate a template from a Geometrize JSON file. Tested with the [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu), currently supports only Geometrize JSON files with rotated ellipses.
 <p align="center">
   <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/04.jpg" alt="template_generate" width="720">
