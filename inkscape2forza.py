@@ -192,6 +192,7 @@ def parse_header(header_path):
 def select_folder(title):
     root = tk.Tk()
     root.withdraw()
+    root.attributes('-topmost', True)
     folder_path = filedialog.askdirectory(title=title, initialdir=os.getcwd())
     root.destroy()
     return folder_path
@@ -199,6 +200,7 @@ def select_folder(title):
 def select_file(title, filetypes):
     root = tk.Tk()
     root.withdraw()
+    root.attributes('-topmost', True)
     file_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=os.getcwd())
     root.destroy()
     return file_path
@@ -206,6 +208,7 @@ def select_file(title, filetypes):
 def save_file(title, filetypes, initialfile):
     root = tk.Tk()
     root.withdraw()
+    root.attributes('-topmost', True)
     file_path = filedialog.asksaveasfilename(
         title=title, 
         filetypes=filetypes, 
@@ -466,7 +469,7 @@ def workflow_geometrize_to_svg():
             type_code = shape.get("type")
             
             if type_code not in (1, 16):
-                print(f"跳过不支持的图形类型 (index {idx}): type {type_code}")
+                print(f"跳过不支持的元素 / Skiped: (index {idx}): type {type_code}")
                 continue
                 
             data = shape.get("data", [])
@@ -536,11 +539,169 @@ def workflow_geometrize_to_svg():
             append_shape(*m_args)
             
         tree.write(save_path, encoding="utf-8", xml_declaration=True)
-        print(f"\n🎉 完美合成！成功写入 {valid_count} 个图形。文件已保存在:\n  {os.path.normpath(save_path)}")
-        print("💡 提示: 接下来你可以打开生成的 SVG 进行手动微调，确认无误后使用功能 3 将其注入游戏存档！")
+        print(f"成功写入 {valid_count} 个图形 / Wrote {valid_count}\n文件已保存在 / Saved: {os.path.normpath(save_path)}")
         
     except Exception as e:
-        print(f"❌ 转换过程中发生错误 / Conversion error: {e}")
+        print(f"错误 / Error: {e}")
+
+def workflow_vinylizer_to_svg():
+    print("\n[1/3] 请选择 Vinylizer 导出的 JSON 文件... / Please select Vinylizer JSON file...")
+    json_path = select_file("Vinylizer JSON", [("JSON", "*.json")])
+    if not json_path:
+        print("已取消 / Cancelled")
+        return
+        
+    print("[2/3] 正在加载内部 SVG 模板进行合成... / Loading internal SVG template for synthesis...")
+    template_path = get_resource_path("inkscape_template.svg.tmp")
+    if not os.path.exists(template_path):
+        print(f"错误: 找不到内部模板文件 / Error: Cannot find internal template file.")
+        return
+        
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            vin_data = json.load(f)
+            
+        shapes = vin_data.get("shapes", vin_data if isinstance(vin_data, list) else [])
+        if isinstance(vin_data, dict) and "shapes" not in vin_data:
+            shapes = []
+            
+        if not shapes:
+            print("错误: JSON 文件中没有找到有效的形状数据 / Error: No valid shapes found in JSON.")
+            return
+            
+    except Exception as e:
+        print(f"读取 JSON 失败 / Failed to read JSON: {e}")
+        return
+        
+    print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
+    save_path = save_file(
+        title="保存由 Vinylizer 生成的 SVG / Save generated SVG", 
+        filetypes=[("SVG", "*.svg")], 
+        initialfile="Vinylizer_Livery.svg"
+    )
+    if not save_path:
+        print("已取消 / Cancelled")
+        return
+
+    try:
+        ET.register_namespace('', 'http://www.w3.org/2000/svg')
+        ET.register_namespace('inkscape', 'http://www.inkscape.org/namespaces/inkscape')
+        ET.register_namespace('sodipodi', 'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd')
+        ET.register_namespace('xlink', 'http://www.w3.org/1999/xlink')
+        
+        tree = ET.parse(template_path)
+        root = tree.getroot()
+        
+        canvas_w = float(root.get('width', '1920').replace('px', '').strip())
+        canvas_h = float(root.get('height', '1080').replace('px', '').strip())
+        
+        symbol_dict = {}
+        for elem in root.iter():
+            if elem.tag.endswith('symbol'):
+                symbol_id = elem.get('id')
+                viewbox_str = elem.get('viewBox')
+                if symbol_id and viewbox_str:
+                    vb = viewbox_str.split()
+                    if len(vb) == 4: 
+                        symbol_dict[f"#{symbol_id}"] = (float(vb[0]), float(vb[1]))
+                        
+        # Default fallback, but check if we can find w228 in the symbol dict
+        soft_circle_href = "#fh6_t1048777_i28_w228"
+        for k in symbol_dict.keys():
+            if k.endswith('_w228'): 
+                soft_circle_href = k
+                break
+            
+        layer1 = root.find('.//{http://www.w3.org/2000/svg}g[@id="layer1"]')
+        target_container = layer1 if layer1 is not None else root
+        
+        def append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_val, opacity_val, href, node_id):
+            min_x, min_y = symbol_dict.get(href, (0.0, 0.0))
+            rad = math.radians(rot_deg)
+            cos_r, sin_r = math.cos(rad), math.sin(rad)
+            
+            ma = sx * cos_r
+            mb = -sx * sin_r
+            mc = sy * sin_r
+            md = sy * cos_r
+            
+            me = svg_cx + ma * min_x + mc * min_y
+            mf = svg_cy + mb * min_x + md * min_y
+            
+            use_elem = ET.Element('{http://www.w3.org/2000/svg}use')
+            use_elem.set('{http://www.w3.org/1999/xlink}href', href)
+            use_elem.set('x', '0')
+            use_elem.set('y', '0')
+            use_elem.set('transform', f"matrix({ma:.6f},{mb:.6f},{mc:.6f},{md:.6f},{me:.6f},{mf:.6f})")
+            use_elem.set('style', f"fill:{fill_val}; opacity:{opacity_val};")
+            use_elem.set('id', node_id)
+            target_container.append(use_elem)
+
+        # Canvas bound
+        min_x, max_x = float('inf'), float('-inf')
+        min_y, max_y = float('inf'), float('-inf')
+        has_valid_shapes = False
+        
+        for shape in shapes:
+            if shape.get("type") == 228:
+                data = shape.get("data", [])
+                if len(data) >= 4:
+                    has_valid_shapes = True
+                    geo_cx = float(data[0])
+                    geo_cy = float(data[1])
+                    min_x = min(min_x, geo_cx)
+                    max_x = max(max_x, geo_cx)
+                    min_y = min(min_y, geo_cy)
+                    max_y = max(max_y, geo_cy)
+                    
+        if has_valid_shapes:
+            geo_cx_center = (min_x + max_x) / 2.0
+            geo_cy_center = (min_y + max_y) / 2.0
+        else:
+            geo_cx_center, geo_cy_center = canvas_w / 2.0, canvas_h / 2.0
+            
+        offset_x = (canvas_w / 2.0) - geo_cx_center
+        offset_y = (canvas_h / 2.0) - geo_cy_center
+
+        valid_count = 0
+        for idx, shape in enumerate(shapes):
+            type_code = shape.get("type")
+            
+            # Vinylizer soft ellipse type=228
+            if type_code != 228:
+                print(f"跳过非 228 类型的元素 / Skipped (index {idx}): type {type_code}")
+                continue
+                
+            data = shape.get("data", [])
+            if len(data) < 4:
+                continue
+                
+            color = shape.get("color", [255, 255, 255, 255])
+            if len(color) < 4: color.append(255)
+            r, g, b, a = [max(0, min(255, int(v))) for v in color]
+            
+            # Vinylizer: [cx, cy, rx, ry, angle]
+            geo_cx = float(data[0])
+            geo_cy = float(data[1])
+            sx = float(data[2]) / 63.0
+            sy = float(data[3]) / 63.0
+            rot_deg = (360.0 - float(data[4])) % 360.0 if len(data) >= 5 else 0.0
+            href = soft_circle_href
+                
+            svg_cx = geo_cx + offset_x
+            svg_cy = geo_cy + offset_y
+
+            fill_hex = f"#{r:02x}{g:02x}{b:02x}"
+            opacity = round(a / 255.0, 4)
+                
+            append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_hex, opacity, href, f"vin_shape_{idx}")
+            valid_count += 1
+            
+        tree.write(save_path, encoding="utf-8", xml_declaration=True)
+        print(f"成功写入 {valid_count} 个图形 / Wrote {valid_count}\n文件已保存在 / Saved: {os.path.normpath(save_path)}")
+        
+    except Exception as e:
+        print(f"错误 / Error: {e}")
 
 def workflow_inject_svg():
     print("\n[1/4] 请选择您的 GameSave 文件夹... / Please select your GameSave folder...")
@@ -554,12 +715,33 @@ def workflow_inject_svg():
         print("这不是有效的存档文件夹 / This is not a valid GameSave folder")
         return
         
-    u_folders = [f for f in os.listdir(pgs_dir) if f.startswith("u_") and os.path.isdir(os.path.join(pgs_dir, f))]
+    u_folders = [f for f in os.listdir(pgs_dir) if f.startswith("u_") and f.endswith("_16D460") and os.path.isdir(os.path.join(pgs_dir, f))]
     if not u_folders:
         print("未找到玩家数据 / No player data found")
         return
         
-    u_dir = os.path.join(pgs_dir, u_folders[0])
+    if len(u_folders) == 1:
+        u_dir = os.path.join(pgs_dir, u_folders[0])
+    else:
+        print("发现多个玩家存档 / Multiple player profiles found:")
+        for i, folder in enumerate(u_folders):
+            print(f"{i+1}. {folder}")
+            
+        while True:
+            choice = input("请选择要操作的存档序号，或输入 q 退出 / Choose player index or 'q' to quit: ").strip().lower()
+            if choice in ('q', 'c', 'exit', 'quit'):
+                print("已取消 / Cancelled")
+                return
+            try:
+                choice_idx = int(choice) - 1
+                if 0 <= choice_idx < len(u_folders):
+                    u_dir = os.path.join(pgs_dir, u_folders[choice_idx])
+                    break
+                else:
+                    print("输入无效 / Invalid input")
+            except ValueError:
+                print("输入无效 / Invalid input")
+                
     containers_root = os.path.join(u_dir, "current", "ContainersRoot")
     
     if not os.path.exists(containers_root):
@@ -634,7 +816,8 @@ def main():
         print("\n=== 请选择你的操作 / Please select your operation ===")
         print("1. 建立新的空白 Inkscape SVG 模板 / Create new blank Inkscape SVG template")
         print("2. 从 Geometrize JSON 建立 Inkscape SVG 模板 / Create Inkscape SVG from Geometrize JSON")
-        print("3. 将 Inkscape SVG 导入到 FH6 存档 / Inject Inkscape SVG into FH6 save")
+        print("3. 从 Vinylizer JSON 建立 Inkscape SVG 模板 / Create Inkscape SVG from Vinylizer JSON")
+        print("4. 将 Inkscape SVG 导入到 FH6 存档 / Inject Inkscape SVG into FH6 save")
         print("Q. 退出 / Quit")
         
         choice = input("\n输入对应序号 / Enter selection: ").strip().lower()
@@ -644,6 +827,8 @@ def main():
         elif choice == '2':
             workflow_geometrize_to_svg()
         elif choice == '3':
+            workflow_vinylizer_to_svg()
+        elif choice == '4':
             workflow_inject_svg()
         elif choice in ('q', 'c', 'exit', 'quit'):
             print("\n退出程序 / Exiting program...")
