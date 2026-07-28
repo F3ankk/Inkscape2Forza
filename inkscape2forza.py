@@ -15,6 +15,9 @@ from tkinter import filedialog
 
 # config
 ANCHOR_BYTES = b"\x00\x02\x66\x00"
+_cached_gamesave_dir = None
+_cached_general_dir = None
+_has_prompted_backup = False
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -193,29 +196,47 @@ def select_folder(title):
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
-    folder_path = filedialog.askdirectory(title=title, initialdir=os.getcwd())
+    folder_path = filedialog.askdirectory(title=title, initialdir="C:\\")
     root.destroy()
     return folder_path
 
 def select_file(title, filetypes):
+    global _cached_general_dir
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
-    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=os.getcwd())
+    
+    init_dir = _cached_general_dir if _cached_general_dir and os.path.exists(_cached_general_dir) else os.path.expanduser('~/Documents')
+    if not os.path.exists(init_dir):
+        init_dir = os.path.expanduser('~')
+        
+    file_path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=init_dir)
+    if file_path:
+        _cached_general_dir = os.path.dirname(file_path)
+        
     root.destroy()
     return file_path
 
 def save_file(title, filetypes, initialfile):
+    global _cached_general_dir
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
+    
+    init_dir = _cached_general_dir if _cached_general_dir and os.path.exists(_cached_general_dir) else os.path.expanduser('~/Documents')
+    if not os.path.exists(init_dir):
+        init_dir = os.path.expanduser('~')
+
     file_path = filedialog.asksaveasfilename(
         title=title, 
         filetypes=filetypes, 
         initialfile=initialfile, 
-        initialdir=os.getcwd(),
+        initialdir=init_dir,
         defaultextension=".svg"
     )
+    if file_path:
+        _cached_general_dir = os.path.dirname(file_path)
+        
     root.destroy()
     return file_path
 
@@ -704,20 +725,30 @@ def workflow_vinylizer_to_svg():
         print(f"错误 / Error: {e}")
 
 def workflow_inject_svg():
+    global _cached_gamesave_dir, _has_prompted_backup
     print("\n[1/4] 请选择您的 GameSave 文件夹... / Please select your GameSave folder...")
-    gamesave_dir = select_folder("GameSave")
-    if not gamesave_dir:
-        print("已取消 / Cancelled")
-        return
-        
+    
+    if _cached_gamesave_dir and os.path.exists(_cached_gamesave_dir):
+        gamesave_dir = _cached_gamesave_dir
+        print(f"自动使用上次选择的路径 / Automatically using previously path:\n  {gamesave_dir}")
+    else:
+        gamesave_dir = select_folder("GameSave")
+        if not gamesave_dir:
+            print("已取消 / Cancelled")
+            return
+            
     pgs_dir = os.path.join(gamesave_dir, "pgs")
     if not os.path.exists(pgs_dir):
         print("这不是有效的存档文件夹 / This is not a valid GameSave folder")
+        _cached_gamesave_dir = None
         return
+        
+    _cached_gamesave_dir = gamesave_dir
         
     u_folders = [f for f in os.listdir(pgs_dir) if f.startswith("u_") and f.endswith("_16D460") and os.path.isdir(os.path.join(pgs_dir, f))]
     if not u_folders:
         print("未找到玩家数据 / No player data found")
+        _cached_gamesave_dir = None
         return
         
     if len(u_folders) == 1:
@@ -750,16 +781,19 @@ def workflow_inject_svg():
 
     print(f"已定位到存档 / GameSave: {os.path.normpath(u_dir)}")
 
-    print("[2/4] 为了您的数据安全，建议操作前备份存档。是否进行？ / For your data safety, it's recommended to backup before proceeding. Do you want to backup?")
-    backup_choice = input("1. 备份 / Backup\n2. 不备份 / Don't backup\n输入 q 退出程序 / 'q' to quit\n选择 / Choose: ").strip().lower()
-    
-    if backup_choice in ('q', 'c', 'exit', 'quit'):
-        print("\n退出程序 / Exiting program...")
-        sys.exit(0)
-    elif backup_choice == "1":
-        create_backup(u_dir, gamesave_dir)
-    else:
-        print("已跳过 / Skipped")
+    if not _has_prompted_backup:
+        print("[2/4] 为了您的数据安全，建议操作前备份存档。是否进行？ / For your data safety, it's recommended to backup before proceeding. Do you want to backup?")
+        backup_choice = input("1. 备份 / Backup\n2. 不备份 / Don't backup\n输入 q 退出程序 / 'q' to quit\n选择 / Choose: ").strip().lower()
+        
+        if backup_choice in ('q', 'c', 'exit', 'quit'):
+            print("\n退出程序 / Exiting program...")
+            sys.exit(0)
+        elif backup_choice == "1":
+            create_backup(u_dir, gamesave_dir)
+        else:
+            print("已跳过 / Skipped")
+        
+        _has_prompted_backup = True
 
     print("[3/4] 请选择要注入的 Inkscape SVG 文件... / Please select your Inkscape SVG file to inject...")
     svg_path = select_file("Inkscape SVG", [("SVG", "*.svg")])
