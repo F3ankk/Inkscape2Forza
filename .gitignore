@@ -1,5 +1,6 @@
 dist/
 build/
+ref/
 __pycache__/
 *.spec
 *.egg-info/
