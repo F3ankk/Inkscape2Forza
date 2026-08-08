@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 # config
 ANCHOR_BYTES = b"\x00\x02\x66\x00"
 DEFAULT_GAMESAVE_DIR = r"C:\XboxGames\GameSave"
+MAX_VINYL_GROUP_LAYERS = 3000
 _cached_gamesave_dir = None
 _cached_general_dir = None
 _has_prompted_backup = False
@@ -82,20 +83,11 @@ def create_inkscape_document():
         'id': 'namedview1402', 'pagecolor': '#505050',
         f'{{{INKSCAPE_NS}}}pageopacity': '0',
         f'{{{INKSCAPE_NS}}}pagecheckerboard': '1',
-        f'{{{INKSCAPE_NS}}}current-layer': 'layer1',
     })
     defs = ET.SubElement(root, f'{{{SVG_NS}}}defs', {'id': 'defs1402'})
-    layer = ET.SubElement(root, f'{{{SVG_NS}}}g', {
-        'id': 'layer1', f'{{{INKSCAPE_NS}}}groupmode': 'layer',
-        f'{{{INKSCAPE_NS}}}label': 'Layer 1',
-    })
-    return ET.ElementTree(root), root, defs, layer
-
-def quantize_alpha(a):
-    if a >= 255: return 255
-    quantized = int(round(a / 3.0) * 3)
-    if quantized < 2: return 2
-    return quantized
+    # Keep shapes at SVG root level so generated artwork does not gain a
+    # synthetic Inkscape layer that would become an extra FH6 subgroup.
+    return ET.ElementTree(root), root, defs, root
 
 def parse_color(elem):
     r, g, b, a = 0, 0, 0, 255 
@@ -118,7 +110,7 @@ def parse_color(elem):
         if op_attr:
             raw_a = float(op_attr) * 255.0
             
-    a = quantize_alpha(raw_a)
+    a = max(0, min(255, int(round(raw_a))))
     return r, g, b, a
 
 def parse_transform(transform_str):
@@ -528,7 +520,7 @@ def build_cgroup_payload(root_group):
     payload.extend(b'gyvl')
     payload.extend(struct.pack('<II', 1, 0))
     payload.extend(struct.pack('<Bffff', 0x03, 0.0, 0.0, 1.0, 0.0))
-    payload.extend(struct.pack('<BHB3s', 0x20, len(children), root_blocks, b'\x00\x00\x00'))
+    payload.extend(struct.pack('<BHH2s', 0x20, len(children), root_blocks, b'\x00\x00'))
     payload.extend(child_bitmap(children))
     child_bytes, final_mask = encode_children(children, root_origin, root_group.is_mask_group)
     payload.extend(child_bytes)
@@ -740,7 +732,7 @@ def decode_cgroup_payload(payload):
     if root_marker not in (0x20, 0x60):
         raise ValueError("Unsupported root group marker")
     count = struct.unpack_from('<H', payload, root_offset + 1)[0]
-    blocks = payload[root_offset + 3]
+    blocks = struct.unpack_from('<H', payload, root_offset + 3)[0]
     bitmap_start = root_offset + 7
     bitmap = payload[bitmap_start:bitmap_start + blocks]
     children, _ = decode_children(payload, bitmap_start + blocks, count, bitmap, root_marker == 0x60)
@@ -1136,12 +1128,22 @@ def workflow_geometrize_to_svg():
     except Exception as e:
         print(f"读取 JSON 失败 / Failed to read JSON: {e}")
         return
+
+    layer_count = 0
+    for shape in shapes:
+        type_code = shape.get("type")
+        data = shape.get("data", [])
+        if type_code not in (1, 16) or len(data) < 4:
+            continue
+        color = shape.get("color", [])
+        layer_count += 4 if type_code == 1 and len(color) >= 4 and color[3] == 0 else 1
+    default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
         
     print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
     save_path = save_file(
         title="保存由 Geometrize 生成的 SVG / Save generated SVG", 
         filetypes=[("SVG 文件", "*.svg")], 
-        initialfile="Geometrize_Livery.svg"
+        initialfile=default_name
     )
     if not save_path:
         print("已取消 / Cancelled")
@@ -1330,12 +1332,19 @@ def workflow_vinylizer_to_svg():
     except Exception as e:
         print(f"读取 JSON 失败 / Failed to read JSON: {e}")
         return
+
+    supported_types = {1, 16, 103, 228}
+    layer_count = sum(
+        1 for shape in shapes
+        if shape.get("type") in supported_types and len(shape.get("data", [])) >= 4
+    )
+    default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
         
     print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
     save_path = save_file(
         title="保存由 Vinylizer 生成的 SVG / Save generated SVG", 
         filetypes=[("SVG", "*.svg")], 
-        initialfile="Vinylizer_Livery.svg"
+        initialfile=default_name
     )
     if not save_path:
         print("已取消 / Cancelled")
@@ -1346,12 +1355,26 @@ def workflow_vinylizer_to_svg():
         tree, root, defs, target_container = create_inkscape_document()
         canvas_w, canvas_h = 1920.0, 1080.0
                         
-        # Default fallback, but check if we can find w228 in the symbol dict
-        soft_circle_href = "#fh6_t1048777_i28_w228"
-        for k in symbol_dict.keys():
-            if k.endswith('_w228'): 
-                soft_circle_href = k
-                break
+        # Vinylizer type -> (FH6 shape word, X divisor, Y divisor).
+        # Triangle size_x is its half-base while size_y is its full height.
+        shape_specs = {
+            1: (101, 127.0, 127.0),
+            16: (102, 63.0, 63.0),
+            103: (103, 63.0, 109.265625),
+            228: (228, 63.0, 63.0),
+        }
+        href_by_type = {}
+        for type_code, (shape_word, _, _) in shape_specs.items():
+            suffix = f'_w{shape_word}'
+            href = next((key for key in symbol_dict if key.endswith(suffix)), None)
+            if href:
+                href_by_type[type_code] = href
+
+        missing_types = [type_code for type_code in shape_specs if type_code not in href_by_type]
+        if missing_types:
+            missing_words = ', '.join(f'w{shape_specs[type_code][0]}' for type_code in missing_types)
+            print(f"错误: 符号库中找不到 {missing_words} / Error: Missing symbols: {missing_words}")
+            return
             
         def append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_val, opacity_val, href, node_id):
             min_x, min_y = symbol_dict.get(href, (0.0, 0.0))
@@ -1381,16 +1404,17 @@ def workflow_vinylizer_to_svg():
         has_valid_shapes = False
         
         for shape in shapes:
-            if shape.get("type") == 228:
-                data = shape.get("data", [])
-                if len(data) >= 4:
-                    has_valid_shapes = True
-                    geo_cx = float(data[0])
-                    geo_cy = float(data[1])
-                    min_x = min(min_x, geo_cx)
-                    max_x = max(max_x, geo_cx)
-                    min_y = min(min_y, geo_cy)
-                    max_y = max(max_y, geo_cy)
+            if shape.get("type") not in shape_specs:
+                continue
+            data = shape.get("data", [])
+            if len(data) >= 4:
+                has_valid_shapes = True
+                geo_cx = float(data[0])
+                geo_cy = float(data[1])
+                min_x = min(min_x, geo_cx)
+                max_x = max(max_x, geo_cx)
+                min_y = min(min_y, geo_cy)
+                max_y = max(max_y, geo_cy)
                     
         if has_valid_shapes:
             geo_cx_center = (min_x + max_x) / 2.0
@@ -1404,27 +1428,28 @@ def workflow_vinylizer_to_svg():
         valid_count = 0
         for idx, shape in enumerate(shapes):
             type_code = shape.get("type")
-            
-            # Vinylizer soft ellipse type=228
-            if type_code != 228:
-                print(f"跳过非 228 类型的元素 / Skipped (index {idx}): type {type_code}")
+
+            if type_code not in shape_specs:
+                print(f"跳过不支持的元素 / Skipped unsupported shape (index {idx}): type {type_code}")
                 continue
                 
             data = shape.get("data", [])
             if len(data) < 4:
                 continue
                 
-            color = shape.get("color", [255, 255, 255, 255])
-            if len(color) < 4: color.append(255)
+            color = list(shape.get("color", [255, 255, 255, 255]))
+            color.extend([255] * (4 - len(color)))
             r, g, b, a = [max(0, min(255, int(v))) for v in color]
-            
-            # Vinylizer: [cx, cy, rx, ry, angle]
+
+            # Vinylizer 1.0.0: [cx, cy, size_x, size_y, angle].
+            # Vinylizer <= 0.1.2 rectangles may omit angle.
             geo_cx = float(data[0])
             geo_cy = float(data[1])
-            sx = float(data[2]) / 63.0
-            sy = float(data[3]) / 63.0
+            _, divisor_x, divisor_y = shape_specs[type_code]
+            sx = float(data[2]) / divisor_x
+            sy = float(data[3]) / divisor_y
             rot_deg = (360.0 - float(data[4])) % 360.0 if len(data) >= 5 else 0.0
-            href = soft_circle_href
+            href = href_by_type[type_code]
                 
             svg_cx = geo_cx + offset_x
             svg_cy = geo_cy + offset_y
@@ -1529,6 +1554,13 @@ def workflow_inject_svg():
         print(f"识别到 {total_nodes} 个元素，过滤后有效图层数：{len(layers_bin_list)} / Found {total_nodes} elements, {len(layers_bin_list)} valid layers after filtering")
     except Exception as e:
         print(f"解析失败 / Failed to parse SVG: {e}")
+        return
+
+    if len(layers_bin_list) > MAX_VINYL_GROUP_LAYERS:
+        print(
+            f"错误：有效图层数 {len(layers_bin_list)} 超过 FH6 彩绘纹饰分组上限 {MAX_VINYL_GROUP_LAYERS}，无法注入。\n"
+            f"Error: {len(layers_bin_list)} valid layers exceeds the FH6 vinyl group limit of {MAX_VINYL_GROUP_LAYERS}. Injection cancelled."
+        )
         return
 
     print("[4/4] 扫描可写入的彩绘纹饰分组... / Scanning for writable vinyl groups...")
