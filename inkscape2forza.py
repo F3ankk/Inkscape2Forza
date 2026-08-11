@@ -113,6 +113,10 @@ def parse_color(elem):
     a = max(0, min(255, int(round(raw_a))))
     return r, g, b, a
 
+def json_shape_is_transparent(shape):
+    color = shape.get("color", [])
+    return len(color) >= 4 and color[3] == 0
+
 def parse_transform(transform_str):
     current_matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     if not transform_str: return current_matrix
@@ -534,16 +538,77 @@ def wrap_cgroup_payload(payload):
     zstream = compressor.compress(payload) + compressor.flush()
     return struct.pack('<II', len(zstream), len(payload)) + zstream
 
+def update_header_layer_count(header_data, layer_count):
+    """Update only the C_group leaf count stored in the companion header."""
+    if not 0 <= layer_count <= MAX_VINYL_GROUP_LAYERS:
+        raise ValueError(f"Invalid vinyl group layer count: {layer_count}")
+
+    def require(size, offset, label):
+        if offset < 0 or offset + size > len(header_data):
+            raise ValueError(f"C_group header is truncated at {label}")
+
+    require(8, 0, "name header")
+    name_length = struct.unpack_from('<I', header_data, 4)[0]
+    offset = 8 + name_length * 2
+
+    require(4, offset, "description length")
+    description_length = struct.unpack_from('<I', header_data, offset)[0]
+    offset += 4 + description_length * 2
+
+    offset += 4 + 16 + 8
+    require(4, offset, "creator length")
+    creator_length = struct.unpack_from('<I', header_data, offset)[0]
+    offset += 4 + creator_length * 2
+
+    section_marker_offset = offset + 28
+    require(9 + 4, section_marker_offset, "section metadata")
+    if header_data[section_marker_offset:section_marker_offset + 2] != b'\x01\x02':
+        raise ValueError("C_group header section marker is invalid")
+
+    layer_count_offset = section_marker_offset + 9
+    updated = bytearray(header_data)
+    struct.pack_into('<I', updated, layer_count_offset, layer_count)
+    return bytes(updated)
+
 def write_cgroup_file(target_cgroup, root_group):
     new_data = wrap_cgroup_payload(build_cgroup_payload(root_group))
+    layer_count = len(flatten_shapes(root_group))
+    header_path = os.path.join(os.path.dirname(target_cgroup), "header")
+    with open(header_path, 'rb') as f:
+        old_header_data = f.read()
+    new_header_data = update_header_layer_count(old_header_data, layer_count)
+
     temp_cgroup = target_cgroup + ".tmp"
-    with open(temp_cgroup, 'wb') as f:
-        f.write(new_data)
+    temp_header = header_path + ".tmp"
+    old_cgroup_data = None
     try:
-        shutil.copystat(target_cgroup, temp_cgroup)
-    except Exception:
-        pass
-    os.replace(temp_cgroup, target_cgroup)
+        with open(temp_cgroup, 'wb') as f:
+            f.write(new_data)
+        with open(temp_header, 'wb') as f:
+            f.write(new_header_data)
+
+        try:
+            shutil.copystat(target_cgroup, temp_cgroup)
+            shutil.copystat(header_path, temp_header)
+        except Exception:
+            pass
+
+        with open(target_cgroup, 'rb') as f:
+            old_cgroup_data = f.read()
+        os.replace(temp_cgroup, target_cgroup)
+        try:
+            os.replace(temp_header, header_path)
+        except Exception:
+            with open(target_cgroup, 'wb') as f:
+                f.write(old_cgroup_data)
+            raise
+    finally:
+        for temp_path in (temp_cgroup, temp_header):
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
 
 def read_u32(data, offset): return struct.unpack_from("<I", data, offset)[0], offset + 4
 def read_utf16(data, offset, char_count):
@@ -1129,14 +1194,24 @@ def workflow_geometrize_to_svg():
         print(f"读取 JSON 失败 / Failed to read JSON: {e}")
         return
 
-    layer_count = 0
-    for shape in shapes:
+    boundary_index = next((
+        idx for idx, shape in enumerate(shapes)
+        if shape.get("type") == 1
+        and len(shape.get("data", [])) >= 4
+        and json_shape_is_transparent(shape)
+    ), None)
+
+    layer_count = 4 if boundary_index is not None else 0
+    for idx, shape in enumerate(shapes):
         type_code = shape.get("type")
         data = shape.get("data", [])
         if type_code not in (1, 16) or len(data) < 4:
             continue
-        color = shape.get("color", [])
-        layer_count += 4 if type_code == 1 and len(color) >= 4 and color[3] == 0 else 1
+        if idx == boundary_index:
+            continue
+        if json_shape_is_transparent(shape):
+            continue
+        layer_count += 1
     default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
         
     print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
@@ -1186,43 +1261,50 @@ def workflow_geometrize_to_svg():
             target_container.append(use_elem)
 
         geo_w, geo_h = 2048.0, 2048.0
-        for shape in shapes:
-            type_code = shape.get("type")
-            color = shape.get("color", [])
-            data = shape.get("data", [])
-            if type_code == 1 and len(color) >= 4 and color[3] == 0 and len(data) >= 4:
-                geo_w = float(data[2])
-                geo_h = float(data[3])
-                break
+        if boundary_index is not None:
+            boundary_data = shapes[boundary_index].get("data", [])
+            geo_w = float(boundary_data[2])
+            geo_h = float(boundary_data[3])
 
         min_ext_x, max_ext_x = float('inf'), float('-inf')
         min_ext_y, max_ext_y = float('inf'), float('-inf')
-        has_valid_shapes = False
-        
-        for shape in shapes:
+        has_visible_shapes = False
+
+        for idx, shape in enumerate(shapes):
             type_code = shape.get("type")
             data = shape.get("data", [])
-            if len(data) >= 4 and type_code in (1, 16):
-                has_valid_shapes = True
-                if type_code == 1:
-                    geo_cx = float(data[0]) + float(data[2]) / 2.0
-                    geo_cy = float(data[1]) + float(data[3]) / 2.0
-                    hw = float(data[2]) / 2.0
-                    hh = float(data[3]) / 2.0
-                else:
-                    geo_cx = float(data[0])
-                    geo_cy = float(data[1])
-                    hw = float(data[2])
-                    hh = float(data[3])
-                    
-                radius = math.hypot(hw, hh)
-                min_ext_x = min(min_ext_x, geo_cx - radius)
-                max_ext_x = max(max_ext_x, geo_cx + radius)
-                min_ext_y = min(min_ext_y, geo_cy - radius)
-                max_ext_y = max(max_ext_y, geo_cy + radius)
-                
-        if not has_valid_shapes:
-            min_ext_x, max_ext_x, min_ext_y, max_ext_y = 0.0, 0.0, 0.0, 0.0
+            if idx == boundary_index or json_shape_is_transparent(shape):
+                continue
+            if len(data) < 4 or type_code not in (1, 16):
+                continue
+
+            has_visible_shapes = True
+            if type_code == 1:
+                geo_cx = float(data[0]) + float(data[2]) / 2.0
+                geo_cy = float(data[1]) + float(data[3]) / 2.0
+                hw = float(data[2]) / 2.0
+                hh = float(data[3]) / 2.0
+            else:
+                geo_cx = float(data[0])
+                geo_cy = float(data[1])
+                hw = float(data[2])
+                hh = float(data[3])
+
+            radius = math.hypot(hw, hh)
+            min_ext_x = min(min_ext_x, geo_cx - radius)
+            max_ext_x = max(max_ext_x, geo_cx + radius)
+            min_ext_y = min(min_ext_y, geo_cy - radius)
+            max_ext_y = max(max_ext_y, geo_cy + radius)
+
+        if not has_visible_shapes:
+            if boundary_index is not None:
+                boundary_data = shapes[boundary_index].get("data", [])
+                min_ext_x = float(boundary_data[0])
+                min_ext_y = float(boundary_data[1])
+                max_ext_x = min_ext_x + float(boundary_data[2])
+                max_ext_y = min_ext_y + float(boundary_data[3])
+            else:
+                min_ext_x = max_ext_x = min_ext_y = max_ext_y = 0.0
 
         valid_count = 0
         deferred_masks = []
@@ -1237,9 +1319,12 @@ def workflow_geometrize_to_svg():
             data = shape.get("data", [])
             if len(data) < 4:
                 continue
+
+            if json_shape_is_transparent(shape) and idx != boundary_index:
+                continue
                 
-            color = shape.get("color", [255, 255, 255, 255])
-            if len(color) < 4: color.append(255)
+            color = list(shape.get("color", [255, 255, 255, 255]))
+            color.extend([255] * (4 - len(color)))
             r, g, b, a = [max(0, min(255, int(v))) for v in color]
             
             if type_code == 1:
@@ -1259,35 +1344,26 @@ def workflow_geometrize_to_svg():
                 
             svg_cx = geo_cx + (canvas_w / 2.0 - geo_w / 2.0)
             svg_cy = geo_cy + (canvas_h / 2.0 - geo_h / 2.0)
-            
-            if type_code == 1 and a == 0:
+
+            if idx == boundary_index:
                 hw = float(data[2]) / 2.0
                 hh = float(data[3]) / 2.0
-                
+
                 svg_min_ext_x = min_ext_x + (canvas_w / 2.0 - geo_w / 2.0)
                 svg_max_ext_x = max_ext_x + (canvas_w / 2.0 - geo_w / 2.0)
                 svg_min_ext_y = min_ext_y + (canvas_h / 2.0 - geo_h / 2.0)
                 svg_max_ext_y = max_ext_y + (canvas_h / 2.0 - geo_h / 2.0)
-                
-                T_top = max(10.0, (svg_cy - hh) - svg_min_ext_y + 20.0)
-                T_bottom = max(10.0, svg_max_ext_y - (svg_cy + hh) + 20.0)
-                T_left = max(10.0, (svg_cx - hw) - svg_min_ext_x + 20.0)
-                T_right = max(10.0, svg_max_ext_x - (svg_cx + hw) + 20.0)
-                
-                m_w = 2*hw + T_left + T_right
-                m_h = T_top
-                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy - hh - m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_top"))
-                
-                m_h = T_bottom
-                deferred_masks.append((svg_cx + (T_right - T_left) / 2.0, svg_cy + hh + m_h / 2.0, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_bottom"))
-                
-                m_w = T_left
-                m_h = 2*hh
-                deferred_masks.append((svg_cx - hw - m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_left"))
-                
-                m_w = T_right
-                deferred_masks.append((svg_cx + hw + m_w / 2.0, svg_cy, m_w / 127.0, m_h / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_right"))
-                
+
+                top = max(10.0, (svg_cy - hh) - svg_min_ext_y + 20.0)
+                bottom = max(10.0, svg_max_ext_y - (svg_cy + hh) + 20.0)
+                left = max(10.0, (svg_cx - hw) - svg_min_ext_x + 20.0)
+                right = max(10.0, svg_max_ext_x - (svg_cx + hw) + 20.0)
+
+                mask_width = 2 * hw + left + right
+                deferred_masks.append((svg_cx + (right - left) / 2.0, svg_cy - hh - top / 2.0, mask_width / 127.0, top / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_top"))
+                deferred_masks.append((svg_cx + (right - left) / 2.0, svg_cy + hh + bottom / 2.0, mask_width / 127.0, bottom / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_bottom"))
+                deferred_masks.append((svg_cx - hw - left / 2.0, svg_cy, left / 127.0, (2 * hh) / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_left"))
+                deferred_masks.append((svg_cx + hw + right / 2.0, svg_cy, right / 127.0, (2 * hh) / 127.0, 0.0, "url(#mask_indicator_dark)", 1.0, rect_href, f"mask_geo_{idx}_right"))
                 valid_count += 4
                 continue
                 
@@ -1296,9 +1372,9 @@ def workflow_geometrize_to_svg():
                 
             append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_hex, opacity, href, f"geo_shape_{idx}")
             valid_count += 1
-            
-        for m_args in deferred_masks:
-            append_shape(*m_args)
+
+        for mask_args in deferred_masks:
+            append_shape(*mask_args)
             
         add_referenced_defs(root, defs, symbol_elements)
         prune_unused_defs(root)
@@ -1336,7 +1412,9 @@ def workflow_vinylizer_to_svg():
     supported_types = {1, 16, 103, 228}
     layer_count = sum(
         1 for shape in shapes
-        if shape.get("type") in supported_types and len(shape.get("data", [])) >= 4
+        if shape.get("type") in supported_types
+        and len(shape.get("data", [])) >= 4
+        and not json_shape_is_transparent(shape)
     )
     default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
         
@@ -1406,6 +1484,8 @@ def workflow_vinylizer_to_svg():
         for shape in shapes:
             if shape.get("type") not in shape_specs:
                 continue
+            if json_shape_is_transparent(shape):
+                continue
             data = shape.get("data", [])
             if len(data) >= 4:
                 has_valid_shapes = True
@@ -1435,6 +1515,9 @@ def workflow_vinylizer_to_svg():
                 
             data = shape.get("data", [])
             if len(data) < 4:
+                continue
+
+            if json_shape_is_transparent(shape):
                 continue
                 
             color = list(shape.get("color", [255, 255, 255, 255]))
