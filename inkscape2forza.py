@@ -117,6 +117,16 @@ def json_shape_is_transparent(shape):
     color = shape.get("color", [])
     return len(color) >= 4 and color[3] == 0
 
+def json_shape_is_at_or_below_opacity(shape, threshold):
+    color = shape.get("color", [])
+    if len(color) < 4:
+        return False
+    try:
+        opacity = max(0, min(255, int(color[3])))
+    except (TypeError, ValueError):
+        return False
+    return opacity <= threshold
+
 def parse_transform(transform_str):
     current_matrix = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
     if not transform_str: return current_matrix
@@ -1201,7 +1211,8 @@ def workflow_geometrize_to_svg():
         and json_shape_is_transparent(shape)
     ), None)
 
-    layer_count = 4 if boundary_index is not None else 0
+    raw_layer_count = 4 if boundary_index is not None else 0
+    layer_count = raw_layer_count
     for idx, shape in enumerate(shapes):
         type_code = shape.get("type")
         data = shape.get("data", [])
@@ -1209,9 +1220,12 @@ def workflow_geometrize_to_svg():
             continue
         if idx == boundary_index:
             continue
+        raw_layer_count += 1
         if json_shape_is_transparent(shape):
             continue
         layer_count += 1
+    print(f"原始图层数 / Original layers: {raw_layer_count}")
+    print(f"过滤后图层数 / Layers after filtering: {layer_count}")
     default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
         
     print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
@@ -1409,13 +1423,39 @@ def workflow_vinylizer_to_svg():
         print(f"读取 JSON 失败 / Failed to read JSON: {e}")
         return
 
+    while True:
+        threshold_input = input(
+            "请输入要忽略的不透明度阈值（0-255），直接按回车默认为 0；输入 q 返回主菜单\n"
+            "Opacity threshold to ignore (0-255). Press Enter for 0, or enter q to return: "
+        ).strip().lower()
+        if threshold_input in ('q', 'c', 'exit', 'quit'):
+            print("已取消 / Cancelled")
+            return
+        if not threshold_input:
+            opacity_threshold = 0
+            break
+        try:
+            opacity_threshold = int(threshold_input)
+            if 0 <= opacity_threshold <= 255:
+                break
+        except ValueError:
+            pass
+        print("输入无效，请输入 0-255 之间的整数 / Invalid input. Enter an integer from 0 to 255.")
+
     supported_types = {1, 16, 103, 228}
+    raw_layer_count = sum(
+        1 for shape in shapes
+        if shape.get("type") in supported_types
+        and len(shape.get("data", [])) >= 4
+    )
     layer_count = sum(
         1 for shape in shapes
         if shape.get("type") in supported_types
         and len(shape.get("data", [])) >= 4
-        and not json_shape_is_transparent(shape)
+        and not json_shape_is_at_or_below_opacity(shape, opacity_threshold)
     )
+    print(f"原始图层数 / Original layers: {raw_layer_count}")
+    print(f"过滤后图层数 / Layers after filtering: {layer_count}")
     default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
         
     print("[3/3] 请选择合并后 SVG 文件的保存位置... / Please select save location for merged SVG...")
@@ -1484,7 +1524,7 @@ def workflow_vinylizer_to_svg():
         for shape in shapes:
             if shape.get("type") not in shape_specs:
                 continue
-            if json_shape_is_transparent(shape):
+            if json_shape_is_at_or_below_opacity(shape, opacity_threshold):
                 continue
             data = shape.get("data", [])
             if len(data) >= 4:
@@ -1517,7 +1557,7 @@ def workflow_vinylizer_to_svg():
             if len(data) < 4:
                 continue
 
-            if json_shape_is_transparent(shape):
+            if json_shape_is_at_or_below_opacity(shape, opacity_threshold):
                 continue
                 
             color = list(shape.get("color", [255, 255, 255, 255]))
