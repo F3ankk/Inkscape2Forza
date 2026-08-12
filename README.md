@@ -26,7 +26,7 @@ This project aims to bypass FH6’s clumsy built‑in editor by enabling desktop
 * **便于临摹**：支持直接在底层垫入高清 PNG/JPG 位图用于描边临摹，手绘痛车党必备。注入工具会自动过滤辅助图层。  
   **Easy tracing**: You can place high‑resolution PNG/JPG images underneath for tracing. The injector automatically ignores non‑symbol layers.
 
-* **v1.0.0 正式版更新**：工具有了GUI界面。感谢群友YukiQWQ8492的适配工作。
+* **v1.0.0 正式版更新**：工具有了GUI界面。感谢群友YukiQWQ8492的适配工作。  
   **v1.0.0 update**: the tool now has a GUI. Thanks to YukiQWQ8492 for the adaptation work.
 
 ## 环境要求 / Requirements
@@ -165,7 +165,8 @@ This project’s inspiration and resource structure analysis benefited greatly f
 此外还要感谢 [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) 和 [vinylizer](https://github.com/Heavenchaos/vinylizer) 项目.
 Special thanks also go to [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) and [vinylizer](https://github.com/Heavenchaos/vinylizer).
 
-感谢群友 YukiQWQ8492 的GUI适配工作!
+感谢群友 YukiQWQ8492 的GUI适配工作!  
+Thanks to YukiQWQ8492 for the adaptation work!
 
 在此向原作者及开源社区表达最诚挚的感谢！  
 Sincere thanks to the original author and the open‑source community.
