@@ -3,6 +3,7 @@ dist/
 ref/
 outdated/
 utiles/
+tests/
 __pycache__/
 *.py[cod]
 *.spec
