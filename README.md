@@ -26,6 +26,9 @@ This project aims to bypass FH6’s clumsy built‑in editor by enabling desktop
 * **便于临摹**：支持直接在底层垫入高清 PNG/JPG 位图用于描边临摹，手绘痛车党必备。注入工具会自动过滤辅助图层。  
   **Easy tracing**: You can place high‑resolution PNG/JPG images underneath for tracing. The injector automatically ignores non‑symbol layers.
 
+* **v1.0.0 正式版更新**：工具有了GUI界面。感谢群友YukiQWQ8492的适配工作。
+  **v1.0.0 update**: the tool now has a GUI. Thanks to YukiQWQ8492 for the adaptation work.
+
 ## 环境要求 / Requirements
 
 * **所需软件**：[Inkscape](https://inkscape.org/)  
@@ -34,6 +37,11 @@ This project aims to bypass FH6’s clumsy built‑in editor by enabling desktop
 * **版本建议**：推荐使用 **v1.4.4 或以上版本**  
   **Recommended version**: **v1.4.4 or later**
 
+## 启动工具 / Launch the Tool
+
+请在release页面下载最新的 `Inkscape2Forza.exe`，双击运行即可。
+Please download the latest `Inkscape2Forza.exe` from the release page and double-click to run.
+
 ## 使用工作流指南 / Workflow Guide
 
 ### 1. 准备画布 / Prepare the Canvas
@@ -41,8 +49,12 @@ This project aims to bypass FH6’s clumsy built‑in editor by enabling desktop
 ~~下载本项目提供的 [Inkscape SVG 模板文件](https://github.com/F3ankk/Inkscape2Forza/blob/main/inkscape_template.svg) 并打开。模板默认画布为 `1920x1080`。你可以将其另存为你的工作副本。~~  
 ~~Download and open the [Inkscape SVG template file](https://github.com/F3ankk/Inkscape2Forza/blob/main/inkscape_template.svg) included in this project. The default canvas size is `1920x1080`. Save a working copy for your project.~~
 
-**v0.1.0 更新**：先运行工具第 1 项“安装 FH6 Inkscape 符号库”。它会安装 `FH6_Vinyl_Symbols.svg` 与 `FH6_Vinyl_Patterns.svg` 到当前用户的 Inkscape 资源目录。之后可直接新建空白 Inkscape 文档，并在 **Symbols** 面板插入 FH6 图形。推荐设定画布尺寸为`1920x1080`。  
-**v0.1.0 update**: Run menu option 1, “Install FH6 Inkscape symbol library”, first. It installs `FH6_Vinyl_Symbols.svg` and `FH6_Vinyl_Patterns.svg` into the current user's Inkscape resource directories. You can then create a blank Inkscape document and insert FH6 shapes from the **Symbols** panel. A `1920x1080` canvas size is recommended.
+**v1.0.0 更新**：先点击“安装FH6符号库到Inkscape”功能卡片。它会安装 `FH6_Vinyl_Symbols.svg` 与 `FH6_Vinyl_Patterns.svg` 到当前用户的 Inkscape 资源目录。之后可直接新建空白 Inkscape 文档，并在 **Symbols** 面板插入 FH6 图形。推荐设定画布尺寸为`1920x1080`。
+
+**v1.0.0 update**: Click the “Install symbol library to Inkscape” action card first. It installs `FH6_Vinyl_Symbols.svg` and `FH6_Vinyl_Patterns.svg` into the current user's Inkscape resource directories. You can then create a blank Inkscape document and insert FH6 shapes from the **Symbols** panel. A `1920x1080` canvas size is recommended.
+
+**在此之前请确保已安装了Inkscape 1.4.4 或以上版本并初次运行过！！否则安装器无法找到安装位置**
+**Make sure you have installed Inkscape 1.4.4 or later and run it at least once before this step! Otherwise, the installer cannot find the installation path.**
 
 其他画布尺寸也可以导入；工具会将画布内容等比例适配到 FH6 的 `1920x1080` 坐标空间。非 16:9、极端宽高比或画布外内容可能导致显示偏差、留边或图案过小。  
 Other canvas sizes can also be imported. The tool fits the canvas uniformly into FH6's `1920x1080` coordinate space. Non-16:9 documents, extreme aspect ratios, or content outside the canvas may cause visible offsets, margins, or very small artwork.
@@ -52,8 +64,9 @@ Other canvas sizes can also be imported. The tool fits the canvas uniformly into
 ~~你现在可以直接使用工具内第一项功能生成空白模板~~，或使用 Geometrize JSON / Vinylizer JSON 生成模板。测试使用 [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) 和 [vinylizer](https://github.com/Heavenchaos/vinylizer) ，目前仅支持旋转椭圆 / 渐变柔边椭圆。  
 ~~You can now generate a blank template directly using the first feature in the tool,~~ or generate a template from a Geometrize JSON / Vinylizer JSON file. Tested with the [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) and [vinylizer](https://github.com/Heavenchaos/vinylizer), currently supports rotated ellipses / soft ellipses.
 
-**v0.1.0 更新**：工具第 1 项改为安装符号库到用户路径。符号不在内嵌在分发SVG中  
-**v0.1.0 update**: Menu option 1 now installs the symbol library to the user path. Symbols are no longer embedded in the distributed SVG.
+**v0.1.0 更新**：“安装 FH6 符号库”功能会将符号库安装到用户路径。符号不再内嵌在分发 SVG 中。
+
+**v0.1.0 update**: The “Install symbol library” action installs the library to the user path. Symbols are no longer embedded in the distributed SVG.
 <p align="center">
   <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/04.jpg" alt="template_generate" width="720">
 </p>
@@ -151,6 +164,8 @@ This project’s inspiration and resource structure analysis benefited greatly f
 
 此外还要感谢 [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) 和 [vinylizer](https://github.com/Heavenchaos/vinylizer) 项目.
 Special thanks also go to [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) and [vinylizer](https://github.com/Heavenchaos/vinylizer).
+
+感谢群友 YukiQWQ8492 的GUI适配工作!
 
 在此向原作者及开源社区表达最诚挚的感谢！  
 Sincere thanks to the original author and the open‑source community.

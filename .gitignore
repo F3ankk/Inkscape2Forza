@@ -1,11 +1,13 @@
-dist/
 build/
+dist/
 ref/
 outdated/
-test/
 utiles/
 __pycache__/
+*.py[cod]
 *.spec
+!inkscape2forza_1.0.0.spec
 *.egg-info/
 *.egg
 draft*
+.icon_verify_*/
