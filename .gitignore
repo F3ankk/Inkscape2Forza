@@ -1,6 +1,9 @@
 dist/
 build/
 ref/
+outdated/
+test/
+utiles/
 __pycache__/
 *.spec
 *.egg-info/

@@ -581,6 +581,24 @@ def update_header_layer_count(header_data, layer_count):
     return bytes(updated)
 
 def write_cgroup_file(target_cgroup, root_group):
+    with open(target_cgroup, 'rb') as f:
+        checked_data = f.read()
+    if len(checked_data) < 8:
+        raise ValueError("Invalid C_group container")
+    checked_comp_len, checked_uncomp_len = struct.unpack_from('<II', checked_data, 0)
+    if checked_comp_len <= 0 or checked_uncomp_len <= 0 or checked_comp_len != len(checked_data) - 8:
+        raise ValueError("Invalid C_group container")
+    checked_stream = zlib.decompressobj()
+    checked_payload = checked_stream.decompress(checked_data[8:]) + checked_stream.flush()
+    if (not checked_stream.eof or checked_stream.unused_data or checked_stream.unconsumed_tail
+            or len(checked_payload) != checked_uncomp_len or len(checked_payload) <= 0x1d
+            or checked_payload[:4] != b'gyvl'):
+        raise ValueError("Invalid C_group container")
+    if checked_payload[0x1d] == 0x21:
+        raise PermissionError("Locked C_group cannot be modified or exported")
+    if checked_payload[0x1d] not in (0x20, 0x60):
+        raise ValueError("Invalid C_group root marker")
+
     new_data = wrap_cgroup_payload(build_cgroup_payload(root_group))
     layer_count = len(flatten_shapes(root_group))
     header_path = os.path.join(os.path.dirname(target_cgroup), "header")
@@ -605,6 +623,21 @@ def write_cgroup_file(target_cgroup, root_group):
 
         with open(target_cgroup, 'rb') as f:
             old_cgroup_data = f.read()
+        if len(old_cgroup_data) < 8:
+            raise ValueError("Invalid C_group container")
+        checked_comp_len, checked_uncomp_len = struct.unpack_from('<II', old_cgroup_data, 0)
+        if checked_comp_len <= 0 or checked_uncomp_len <= 0 or checked_comp_len != len(old_cgroup_data) - 8:
+            raise ValueError("Invalid C_group container")
+        checked_stream = zlib.decompressobj()
+        checked_payload = checked_stream.decompress(old_cgroup_data[8:]) + checked_stream.flush()
+        if (not checked_stream.eof or checked_stream.unused_data or checked_stream.unconsumed_tail
+                or len(checked_payload) != checked_uncomp_len or len(checked_payload) <= 0x1d
+                or checked_payload[:4] != b'gyvl'):
+            raise ValueError("Invalid C_group container")
+        if checked_payload[0x1d] == 0x21:
+            raise PermissionError("Locked C_group cannot be modified or exported")
+        if checked_payload[0x1d] not in (0x20, 0x60):
+            raise ValueError("Invalid C_group root marker")
         os.replace(temp_cgroup, target_cgroup)
         try:
             os.replace(temp_header, header_path)
@@ -647,15 +680,25 @@ def parse_header(header_path):
         return "Unknown", "Unknown"
 
 def unwrap_cgroup_file(cgroup_path):
-    data = open(cgroup_path, 'rb').read()
+    with open(cgroup_path, 'rb') as f:
+        data = f.read()
     if len(data) < 8:
         raise ValueError("C_group file is too small")
     comp_len, uncomp_len = struct.unpack_from('<II', data, 0)
-    payload = zlib.decompress(data[8:8 + comp_len])
-    if uncomp_len and len(payload) != uncomp_len:
+    if comp_len <= 0 or uncomp_len <= 0 or comp_len != len(data) - 8:
+        raise ValueError("Invalid C_group container")
+    stream = zlib.decompressobj()
+    payload = stream.decompress(data[8:]) + stream.flush()
+    if not stream.eof or stream.unused_data or stream.unconsumed_tail:
+        raise ValueError("Invalid C_group compressed stream")
+    if len(payload) != uncomp_len:
         raise ValueError("C_group uncompressed length mismatch")
-    if payload[:4] != b'gyvl':
+    if len(payload) <= 0x1d or payload[:4] != b'gyvl':
         raise ValueError("Invalid C_group magic")
+    if payload[0x1d] == 0x21:
+        raise PermissionError("Locked C_group cannot be modified or exported")
+    if payload[0x1d] not in (0x20, 0x60):
+        raise ValueError("Invalid C_group root marker")
     return payload
 
 def parse_shape_record(data, offset):
@@ -1091,6 +1134,23 @@ def get_target_layer_groups(containers_root):
         header_path = os.path.join(folder, "header")
         
         if os.path.exists(c_group_path) and os.path.exists(header_path):
+            try:
+                with open(c_group_path, 'rb') as f:
+                    checked_data = f.read()
+                if len(checked_data) < 8:
+                    continue
+                checked_comp_len, checked_uncomp_len = struct.unpack_from('<II', checked_data, 0)
+                if checked_comp_len <= 0 or checked_uncomp_len <= 0 or checked_comp_len != len(checked_data) - 8:
+                    continue
+                checked_stream = zlib.decompressobj()
+                checked_payload = checked_stream.decompress(checked_data[8:]) + checked_stream.flush()
+                if (not checked_stream.eof or checked_stream.unused_data or checked_stream.unconsumed_tail
+                        or len(checked_payload) != checked_uncomp_len or len(checked_payload) <= 0x1d
+                        or checked_payload[:4] != b'gyvl'
+                        or checked_payload[0x1d] not in (0x20, 0x60)):
+                    continue
+            except Exception:
+                continue
             title, author = parse_header(header_path)
             valid_groups.append({
                 "path": c_group_path,
