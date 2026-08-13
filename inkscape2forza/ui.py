@@ -1,5 +1,7 @@
 """Tkinter user interface."""
 import os
+import queue
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
@@ -190,7 +192,11 @@ class App(tk.Tk):
         self._account_selector = account_selector
         self._cards = []
         self._busy = False
+        self._ui_thread = threading.get_ident()
+        self._ui_requests = queue.Queue()
+        self._account_state_before_busy = "readonly"
         self._build_ui()
+        self.after(20, self._process_ui_requests)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def _build_ui(self):
@@ -280,7 +286,9 @@ class App(tk.Tk):
         current = self.account_var.get()
         selected = current if current in accounts else (accounts[0] if accounts else placeholder)
         self.account_var.set(selected)
-        self.account_combo.configure(state="readonly" if accounts else "disabled")
+        self._account_state_before_busy = "readonly" if accounts else "disabled"
+        state = "disabled" if self._busy else self._account_state_before_busy
+        self.account_combo.configure(state=state)
         if accounts and self._account_selector:
             self._account_selector(selected)
 
@@ -306,11 +314,13 @@ class App(tk.Tk):
     def set_busy(self, busy):
         self._busy = busy
         if busy:
+            self.account_combo.configure(state="disabled")
             self.progress.start(12)
             self.status.config(text=tr("处理中…", "Working…"), fg=TEXT)
             for item in self._cards:
                 self._style_card(item, DISABLED_CARD, "arrow", DISABLED_TEXT)
         else:
+            self.account_combo.configure(state=self._account_state_before_busy)
             self.progress.stop()
             self.status.config(text=tr("就绪", "Ready"), fg=MUTED)
             for item in self._cards:
@@ -323,14 +333,47 @@ class App(tk.Tk):
             return
         self.log(f"========== {name} ==========")
         self.set_busy(True)
+        threading.Thread(
+            target=self._run_workflow, args=(action,),
+            name="inkscape2forza-workflow", daemon=True,
+        ).start()
+
+    def _run_workflow(self, action):
         try:
             action()
         except Exception as e:
-            self.log(tr(f"错误：{e}", f"Error: {e}"))
-            messagebox.showerror(tr("错误", "Error"), str(e), parent=self)
+            self.call_on_ui(self.log, tr(f"错误：{e}", f"Error: {e}"))
+            self.call_on_ui(
+                messagebox.showerror, tr("错误", "Error"), str(e), parent=self
+            )
         finally:
-            self.set_busy(False)
-            self.log(tr("========== 完成 ==========", "========== Done =========="))
+            self.call_on_ui(self._finish_workflow)
+
+    def _finish_workflow(self):
+        self.set_busy(False)
+        self.log(tr("========== 完成 ==========", "========== Done =========="))
+
+    def call_on_ui(self, callback, *args, **kwargs):
+        if threading.get_ident() == self._ui_thread:
+            return callback(*args, **kwargs)
+        response = queue.Queue(maxsize=1)
+        self._ui_requests.put((callback, args, kwargs, response))
+        succeeded, value = response.get()
+        if succeeded:
+            return value
+        raise value
+
+    def _process_ui_requests(self):
+        while True:
+            try:
+                callback, args, kwargs, response = self._ui_requests.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                response.put((True, callback(*args, **kwargs)))
+            except Exception as e:
+                response.put((False, e))
+        self.after(20, self._process_ui_requests)
 
     def on_close(self):
         if self._busy:
@@ -352,7 +395,7 @@ def run(app):
 def log(message):
     message = localize(message)
     if _root is not None:
-        _root.log(message)
+        _root.call_on_ui(_root.log, message)
     else:
         print(message)
 
@@ -366,14 +409,22 @@ def _init_dir():
 
 
 def ask_folder(title):
-    return filedialog.askdirectory(title=localize(title), parent=_root)
+    kwargs = {"title": localize(title), "parent": _root}
+    if _root is not None:
+        return _root.call_on_ui(filedialog.askdirectory, **kwargs)
+    return filedialog.askdirectory(**kwargs)
 
 
 def ask_open_file(title, filetypes):
     global _last_dir
-    path = filedialog.askopenfilename(title=localize(title),
-                                      filetypes=[(localize(name), pattern) for name, pattern in filetypes],
-                                      initialdir=_init_dir(), parent=_root)
+    kwargs = {
+        "title": localize(title),
+        "filetypes": [(localize(name), pattern) for name, pattern in filetypes],
+        "initialdir": _init_dir(),
+        "parent": _root,
+    }
+    path = (_root.call_on_ui(filedialog.askopenfilename, **kwargs)
+            if _root else filedialog.askopenfilename(**kwargs))
     if path:
         _last_dir = os.path.dirname(path)
     return path
@@ -381,32 +432,47 @@ def ask_open_file(title, filetypes):
 
 def ask_save_file(title, filetypes, initialfile, defaultextension=".svg"):
     global _last_dir
-    path = filedialog.asksaveasfilename(title=localize(title),
-                                        filetypes=[(localize(name), pattern) for name, pattern in filetypes], initialfile=initialfile,
-                                        initialdir=_init_dir(), defaultextension=defaultextension, parent=_root)
+    kwargs = {
+        "title": localize(title),
+        "filetypes": [(localize(name), pattern) for name, pattern in filetypes],
+        "initialfile": initialfile,
+        "initialdir": _init_dir(),
+        "defaultextension": defaultextension,
+        "parent": _root,
+    }
+    path = (_root.call_on_ui(filedialog.asksaveasfilename, **kwargs)
+            if _root else filedialog.asksaveasfilename(**kwargs))
     if path:
         _last_dir = os.path.dirname(path)
     return path
 
 
 def ask_confirm(title, message):
-    return messagebox.askyesno(localize(title), localize(message), parent=_root)
+    args = (localize(title), localize(message))
+    return (_root.call_on_ui(messagebox.askyesno, *args, parent=_root)
+            if _root else messagebox.askyesno(*args))
 
 
 def ask_int(title, prompt, default=0, minvalue=0, maxvalue=255):
     if _root is None:
         return None
-    dialog = InputDialog(_root, localize(title), localize(prompt), default, minvalue, maxvalue)
-    return dialog.result
+    def show_dialog():
+        dialog = InputDialog(_root, localize(title), localize(prompt), default, minvalue, maxvalue)
+        return dialog.result
+
+    return _root.call_on_ui(show_dialog)
 
 
 def ask_choice(title, prompt, options, image_paths=None):
     if _root is None or not options:
         return None
-    dialog = ChoiceDialog(_root, localize(title), localize(prompt), options, image_paths)
-    return dialog.result
+    def show_dialog():
+        dialog = ChoiceDialog(_root, localize(title), localize(prompt), options, image_paths)
+        return dialog.result
+
+    return _root.call_on_ui(show_dialog)
 
 
 def refresh_accounts():
     if _root is not None:
-        _root.refresh_accounts()
+        _root.call_on_ui(_root.refresh_accounts)

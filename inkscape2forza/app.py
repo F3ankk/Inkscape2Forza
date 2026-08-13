@@ -7,7 +7,7 @@ ACTIONS = (
     ("🎨", "从Vinylizer JSON生成SVG", "Generate SVG from Vinylizer JSON", workflows.workflow_vinylizer_to_svg),
     ("💾", "备份当前账户存档", "Back up current gamesave", workflows.workflow_backup_save),
     ("⬇️", "将SVG导入存档", "Import SVG to gamesave", workflows.workflow_inject_svg),
-    ("⬆️", "从存档导出 SVG", "Export SVG from gamesave", workflows.workflow_export_svg),
+    ("⬆️", "从存档导出SVG", "Export SVG from gamesave", workflows.workflow_export_svg),
 )
 
 

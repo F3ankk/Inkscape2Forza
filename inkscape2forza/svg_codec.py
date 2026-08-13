@@ -4,33 +4,108 @@ import os
 import re
 import xml.etree.ElementTree as ET
 
+from PIL import ImageColor
+
 from .common import INKSCAPE_NS, SODIPODI_NS, SVG_NS, XLINK_NS
 from .model import GroupNode, ShapeNode
 
 
 # Attributes
 
-def parse_color(elem):
-    r, g, b, a = 0, 0, 0, 255
-    style_str = elem.get('style', '')
-    fill_match = re.search(r'fill:\s*#([0-9a-fA-F]{6})', style_str)
-    if not fill_match:
-        fill_attr = elem.get('fill', '')
-        fill_match = re.search(r'#([0-9a-fA-F]{6})\b', fill_attr)
+def style_properties(elem):
+    properties = {}
+    for declaration in elem.get('style', '').split(';'):
+        name, separator, value = declaration.partition(':')
+        if separator:
+            properties[name.strip().lower()] = value.strip()
+    return properties
 
-    if fill_match:
-        hex_color = fill_match.group(1)
-        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
 
-    raw_a = 255.0
-    opacity_match = re.search(r'(?:fill-)?opacity:\s*([0-9.]+)', style_str)
-    if opacity_match:
-        raw_a = float(opacity_match.group(1)) * 255.0
-    else:
-        op_attr = elem.get('opacity') or elem.get('fill-opacity')
-        if op_attr:
-            raw_a = float(op_attr) * 255.0
+def collect_stylesheet_rules(root):
+    rules = []
+    order = 0
+    for element in root.iter():
+        if get_local_name(element) != 'style' or not element.text:
+            continue
+        css = re.sub(r'/\*.*?\*/', '', element.text, flags=re.DOTALL)
+        for selector_text, declaration_text in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
+            declarations = style_properties(ET.Element('style', {'style': declaration_text}))
+            for selector in selector_text.split(','):
+                selector = selector.strip()
+                if selector and not re.search(r'[\s>+~:\[]', selector):
+                    specificity = 100 * selector.count('#') + 10 * selector.count('.')
+                    tag = re.match(r'^[A-Za-z_][\w-]*', selector)
+                    specificity += int(tag is not None)
+                    rules.append((specificity, order, selector, declarations))
+                    order += 1
+    return sorted(rules)
 
+
+def selector_matches(elem, selector):
+    tag = re.match(r'^[A-Za-z_][\w-]*|^\*', selector)
+    if tag and tag.group() != '*' and get_local_name(elem) != tag.group():
+        return False
+    ids = re.findall(r'#([\w-]+)', selector)
+    if ids and elem.get('id') not in ids:
+        return False
+    classes = set((elem.get('class') or '').split())
+    return all(name in classes for name in re.findall(r'\.([\w-]+)', selector))
+
+
+def computed_style(elem, stylesheet_rules):
+    properties = {}
+    for _, _, selector, declarations in stylesheet_rules:
+        if selector_matches(elem, selector):
+            properties.update(declarations)
+    properties.update(style_properties(elem))
+    return properties
+
+
+def style_value(elem, name, properties=None):
+    properties = properties if properties is not None else style_properties(elem)
+    return properties.get(name, elem.get(name))
+
+
+def opacity_value(value, default=1.0):
+    if value is None:
+        return default
+    try:
+        text = str(value).strip()
+        opacity = float(text[:-1]) / 100.0 if text.endswith('%') else float(text)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(opacity):
+        return default
+    return max(0.0, min(1.0, opacity))
+
+
+def parse_css_color(value):
+    value = str(value or '').strip()
+    try:
+        rgba = ImageColor.getrgb(value)
+    except (TypeError, ValueError):
+        return 0, 0, 0, 1.0
+    if len(rgba) == 3:
+        return *rgba, 1.0
+    return *rgba[:3], rgba[3] / 255.0
+
+
+def parse_color(elem, inherited_opacity=1.0, inherited_fill_opacity=1.0,
+                inherited_fill=None, properties=None):
+    r, g, b = 0, 0, 0
+    properties = properties if properties is not None else style_properties(elem)
+    fill = style_value(elem, 'fill', properties)
+    if fill is None or str(fill).strip().lower() == 'inherit':
+        fill = inherited_fill
+    color_alpha = 1.0
+    if fill and not str(fill).strip().lower().startswith('url('):
+        r, g, b, color_alpha = parse_css_color(fill)
+
+    fill_opacity = opacity_value(
+        style_value(elem, 'fill-opacity', properties), inherited_fill_opacity
+    )
+    object_opacity = opacity_value(style_value(elem, 'opacity', properties))
+    raw_a = 255.0 * color_alpha * fill_opacity * object_opacity * inherited_opacity
     a = max(0, min(255, int(round(raw_a))))
     return r, g, b, a
 
@@ -45,9 +120,12 @@ def get_local_name(elem):
 
 def parse_float_attr(elem, name, default=0.0):
     try:
-        return float(elem.get(name, default))
+        value = float(elem.get(name, default))
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(value):
+        raise ValueError(f"SVG {name} contains a non-finite number")
+    return value
 
 
 # Transforms
@@ -65,6 +143,8 @@ def parse_transform(transform_str):
 
     for cmd, args in re.findall(r'([a-zA-Z]+)\s*\(([^)]+)\)', transform_str):
         vals = [float(x) for x in args.replace(',', ' ').split()]
+        if not all(math.isfinite(value) for value in vals):
+            raise ValueError("SVG transform contains a non-finite number")
         if not vals:
             continue
         if cmd == 'matrix' and len(vals) == 6:
@@ -93,7 +173,10 @@ def parse_transform(transform_str):
 
 def parse_svg_length(value, default):
     match = re.match(r'\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))', value or '')
-    return float(match.group(1)) if match else default
+    if not match:
+        return default
+    parsed = float(match.group(1))
+    return parsed if math.isfinite(parsed) and parsed > 0 else default
 
 
 def get_svg_canvas(root):
@@ -101,7 +184,9 @@ def get_svg_canvas(root):
     if len(viewbox) == 4:
         try:
             canvas_x, canvas_y, canvas_w, canvas_h = map(float, viewbox)
-            if canvas_w > 0 and canvas_h > 0:
+            if (all(math.isfinite(value) for value in
+                    (canvas_x, canvas_y, canvas_w, canvas_h))
+                    and canvas_w > 0 and canvas_h > 0):
                 return canvas_x, canvas_y, canvas_w, canvas_h
         except ValueError:
             pass
@@ -127,15 +212,16 @@ def decompose_matrix(a, b, c, d, e, f, min_x, min_y, canvas_x, canvas_y, canvas_
 
 # Visibility
 
-def detect_mask_element(elem, pattern_dict):
+def detect_mask_element(elem, pattern_dict, properties=None):
     elem_id = elem.get('id', '').lower()
-    style_str = elem.get('style', '').lower()
-    fill_attr = elem.get('fill', '').lower()
+    properties = properties if properties is not None else style_properties(elem)
+    style_str = ';'.join(f'{name}:{value}' for name, value in properties.items()).lower()
+    fill_attr = str(style_value(elem, 'fill', properties) or '').lower()
     if elem.get('data-forza-mask-group') == '1':
         return True
     url_match = re.search(r'url\((\#[^)]+)\)', style_str) or re.search(r'url\((\#[^)]+)\)', fill_attr)
     resolved_href = pattern_dict.get(url_match.group(1), '').lower() if url_match else ""
-    return (
+    return bool(
         elem_id.startswith('mask') or
         'destination-out' in style_str or
         'mask_indicator' in resolved_href or
@@ -143,13 +229,25 @@ def detect_mask_element(elem, pattern_dict):
     )
 
 
-def is_hidden_or_empty(elem, is_mask):
-    style_str = elem.get('style', '').lower().replace(' ', '')
-    fill_attr = elem.get('fill', '').lower()
-    return (
-        ('fill:none' in style_str or fill_attr == 'none') or
-        ('display:none' in style_str or elem.get('display', '').lower() == 'none')
-    ) and not is_mask
+def element_visibility(elem, inherited_visibility='visible', properties=None):
+    properties = properties if properties is not None else style_properties(elem)
+    display = str(style_value(elem, 'display', properties) or '').strip().lower()
+    raw_visibility = style_value(elem, 'visibility', properties)
+    if raw_visibility is None or str(raw_visibility).strip().lower() == 'inherit':
+        visibility = inherited_visibility
+    else:
+        visibility = str(raw_visibility).strip().lower()
+    return display != 'none', visibility
+
+
+def is_empty_fill(elem, is_mask, inherited_fill=None, properties=None):
+    if is_mask:
+        return False
+    properties = properties if properties is not None else style_properties(elem)
+    fill = style_value(elem, 'fill', properties)
+    if fill is None or str(fill).strip().lower() == 'inherit':
+        fill = inherited_fill
+    return str(fill or '').strip().lower() == 'none'
 
 
 # Parsing
@@ -165,7 +263,12 @@ def collect_svg_defs(root):
             if symbol_id and viewbox_str:
                 vb = viewbox_str.split()
                 if len(vb) == 4:
-                    symbol_dict[f"#{symbol_id}"] = (float(vb[0]), float(vb[1]))
+                    try:
+                        values = tuple(map(float, vb))
+                    except ValueError:
+                        continue
+                    if all(math.isfinite(value) for value in values):
+                        symbol_dict[f"#{symbol_id}"] = values[:2]
         elif local == 'pattern':
             pattern_id = elem.get('id')
             href = get_href(elem)
@@ -182,9 +285,22 @@ def process_svg(svg_path):
     canvas_x, canvas_y, canvas_w, canvas_h = get_svg_canvas(root)
 
     symbol_dict, pattern_dict = collect_svg_defs(root)
+    stylesheet_rules = collect_stylesheet_rules(root)
+    style_cache = {}
+
+    def properties_for(element):
+        key = id(element)
+        properties = style_cache.get(key)
+        if properties is None:
+            properties = computed_style(element, stylesheet_rules)
+            style_cache[key] = properties
+        return properties
+
     total_fh6_nodes = 0
 
-    def parse_children(parent, parent_matrix, inherited_mask=False):
+    def parse_children(parent, parent_matrix, inherited_mask=False,
+                       inherited_opacity=1.0, inherited_fill_opacity=1.0,
+                       inherited_fill=None, inherited_visibility='visible'):
         nonlocal total_fh6_nodes
         group = GroupNode(name=parent.get('id', ''), is_mask_group=inherited_mask)
 
@@ -196,8 +312,26 @@ def process_svg(svg_path):
             elem_matrix = mult_matrix(parent_matrix, parse_transform(elem.get('transform', '')))
 
             if local == 'g':
-                child_is_mask = inherited_mask or detect_mask_element(elem, pattern_dict)
-                child_group = parse_children(elem, elem_matrix, child_is_mask)
+                properties = properties_for(elem)
+                displayed, visibility = element_visibility(
+                    elem, inherited_visibility, properties
+                )
+                if not displayed:
+                    continue
+                child_is_mask = inherited_mask or detect_mask_element(elem, pattern_dict, properties)
+                group_opacity = inherited_opacity * opacity_value(
+                    style_value(elem, 'opacity', properties)
+                )
+                group_fill_opacity = opacity_value(
+                    style_value(elem, 'fill-opacity', properties), inherited_fill_opacity
+                )
+                group_fill = style_value(elem, 'fill', properties)
+                if group_fill is None or str(group_fill).strip().lower() == 'inherit':
+                    group_fill = inherited_fill
+                child_group = parse_children(
+                    elem, elem_matrix, child_is_mask, group_opacity, group_fill_opacity,
+                    group_fill, visibility
+                )
                 if child_group.children:
                     group.children.append(child_group)
                 continue
@@ -211,12 +345,22 @@ def process_svg(svg_path):
                 continue
 
             total_fh6_nodes += 1
-            is_current_mask = inherited_mask or detect_mask_element(elem, pattern_dict)
-            if is_hidden_or_empty(elem, is_current_mask):
+            properties = properties_for(elem)
+            is_current_mask = inherited_mask or detect_mask_element(elem, pattern_dict, properties)
+            displayed, visibility = element_visibility(
+                elem, inherited_visibility, properties
+            )
+            if (not displayed or visibility in ('hidden', 'collapse')
+                    or is_empty_fill(elem, is_current_mask, inherited_fill, properties)):
                 continue
 
             shape_word = int(match.group(3))
-            r, g, b, a_val = parse_color(elem)
+            r, g, b, a_val = parse_color(
+                elem, inherited_opacity, inherited_fill_opacity,
+                inherited_fill, properties
+            )
+            if a_val == 0:
+                continue
             if is_current_mask:
                 r, g, b = 255, 255, 255
 
@@ -233,7 +377,17 @@ def process_svg(svg_path):
 
         return group
 
-    root_group = parse_children(root, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), False)
+    root_properties = properties_for(root)
+    root_displayed, root_visibility = element_visibility(root, 'visible', root_properties)
+    if not root_displayed or root_visibility in ('hidden', 'collapse'):
+        return GroupNode(name=root.get('id', '')), total_fh6_nodes
+    root_opacity = opacity_value(style_value(root, 'opacity', root_properties))
+    root_fill_opacity = opacity_value(style_value(root, 'fill-opacity', root_properties))
+    root_fill = style_value(root, 'fill', root_properties)
+    root_group = parse_children(
+        root, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), False,
+        root_opacity, root_fill_opacity, root_fill, root_visibility
+    )
     return root_group, total_fh6_nodes
 
 

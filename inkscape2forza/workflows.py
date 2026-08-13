@@ -61,6 +61,44 @@ def append_shape_wrapper(target_container, symbol_dict):
     return append_shape
 
 
+def prepare_json_shapes(shapes, supported_types):
+    prepared = []
+    skipped = 0
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            skipped += 1
+            continue
+        if shape.get("type") not in supported_types:
+            prepared.append(shape)
+            continue
+        data = shape.get("data", [])
+        if not isinstance(data, (list, tuple)) or len(data) < 4:
+            skipped += 1
+            continue
+        try:
+            numeric_data = [float(value) for value in data[:5]]
+            if not all(math.isfinite(value) for value in numeric_data):
+                raise ValueError
+            color = list(shape.get("color", [255, 255, 255, 255]))
+            color.extend([255] * (4 - len(color)))
+            numeric_color = [int(value) for value in color[:4]]
+        except (TypeError, ValueError, OverflowError):
+            skipped += 1
+            continue
+        item = dict(shape)
+        item["data"] = numeric_data
+        item["color"] = [max(0, min(255, value)) for value in numeric_color]
+        prepared.append(item)
+    return prepared, skipped
+
+
+def has_supported_json_shape(shapes, supported_types):
+    return any(
+        shape.get("type") in supported_types and len(shape.get("data", [])) >= 4
+        for shape in shapes
+    )
+
+
 # Symbol installation
 
 def workflow_install_inkscape_symbols():
@@ -129,6 +167,14 @@ def workflow_geometrize_to_svg():
 
         if not shapes:
             ui.log(tr("错误：JSON 文件中没有找到有效的形状数据。", "Error: No valid shapes found in JSON."))
+            return
+        shapes, skipped = prepare_json_shapes(shapes, {1, 16})
+        if skipped:
+            ui.log(tr(f"已跳过 {skipped} 个数值无效的图形",
+                      f"Skipped {skipped} shapes with invalid numeric data"))
+        if not has_supported_json_shape(shapes, {1, 16}):
+            ui.log(tr("错误：JSON 文件中没有可转换的图形。",
+                      "Error: JSON contains no convertible shapes."))
             return
     except Exception as e:
         ui.log(tr(f"读取 JSON 失败：{e}", f"Failed to read JSON: {e}"))
@@ -334,6 +380,14 @@ def workflow_vinylizer_to_svg():
 
         if not shapes:
             ui.log(tr("错误：JSON 文件中没有找到有效的形状数据。", "Error: No valid shapes found in JSON."))
+            return
+        shapes, skipped = prepare_json_shapes(shapes, {1, 16, 103, 228})
+        if skipped:
+            ui.log(tr(f"已跳过 {skipped} 个数值无效的图形",
+                      f"Skipped {skipped} shapes with invalid numeric data"))
+        if not has_supported_json_shape(shapes, {1, 16, 103, 228}):
+            ui.log(tr("错误：JSON 文件中没有可转换的图形。",
+                      "Error: JSON contains no convertible shapes."))
             return
     except Exception as e:
         ui.log(tr(f"读取 JSON 失败：{e}", f"Failed to read JSON: {e}"))
@@ -604,7 +658,12 @@ def workflow_export_svg():
 
 def json_shape_is_transparent(shape):
     color = shape.get("color", [])
-    return len(color) >= 4 and color[3] == 0
+    if len(color) < 4:
+        return False
+    try:
+        return int(color[3]) <= 0
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def json_shape_is_at_or_below_opacity(shape, threshold):

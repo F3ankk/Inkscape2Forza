@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 
-from . import cgroup_codec, ui
+from . import cgroup_codec, library, ui
 from .common import DEFAULT_GAMESAVE_DIR
 from .i18n import tr
 from .xbox_profiles import resolve_gamertags
@@ -142,7 +142,9 @@ def get_target_layer_groups(containers_root):
 
 def inject_cgroup(target_cgroup, root_group):
     try:
-        cgroup_codec.write_cgroup_file(target_cgroup, root_group)
+        cgroup_codec.write_cgroup_file(
+            target_cgroup, root_group, library.load_shape_half_extents()
+        )
     except Exception as e:
         ui.log(tr(f"写入彩绘纹饰分组失败：{e}", f"Failed to write vinyl group: {e}"))
         return False
