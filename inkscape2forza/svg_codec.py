@@ -2,6 +2,7 @@
 import math
 import os
 import re
+import tempfile
 import xml.etree.ElementTree as ET
 
 from PIL import ImageColor
@@ -402,7 +403,27 @@ def write_inkscape_svg(tree, svg_path):
     root = tree.getroot()
     root.set(f'{{{SODIPODI_NS}}}docname', os.path.basename(svg_path))
     ET.indent(tree, space='  ')
-    tree.write(svg_path, encoding='utf-8', xml_declaration=True, short_empty_elements=True)
+    output_dir = os.path.dirname(os.path.abspath(svg_path))
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode='wb', dir=output_dir, prefix='.inkscape2forza_',
+                suffix='.svg.tmp', delete=False) as temp_file:
+            temp_path = temp_file.name
+            tree.write(
+                temp_file, encoding='utf-8', xml_declaration=True,
+                short_empty_elements=True
+            )
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, svg_path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def create_inkscape_document():
@@ -445,10 +466,11 @@ def append_shape_use(parent, href, symbol_dict, svg_cx, svg_cy, sx, sy, rot_deg,
     parent.append(use_elem)
 
 
-def append_svg_shape(parent, shape, href, symbol_dict, canvas_w, canvas_h, node_id):
+def append_svg_shape(parent, shape, href, symbol_dict, canvas_w, canvas_h, node_id,
+                     inherited_mask=False):
     svg_cx = canvas_w / 2.0 + shape.tx
     svg_cy = canvas_h / 2.0 - shape.ty
-    if shape.is_mask:
+    if inherited_mask or shape.is_mask:
         fill = "url(#mask_indicator_dark)"
         node_id = node_id.replace('shape', 'mask')
     else:
@@ -457,20 +479,28 @@ def append_svg_shape(parent, shape, href, symbol_dict, canvas_w, canvas_h, node_
                      shape.rot, fill, round(shape.a / 255.0, 4), node_id, shape.skew)
 
 
-def append_svg_group(parent, group, href_by_word, symbol_dict, canvas_w, canvas_h, prefix):
+def append_svg_group(parent, group, href_by_word, symbol_dict, canvas_w, canvas_h,
+                     prefix, inherited_mask=False):
+    effective_mask = inherited_mask or group.is_mask_group
     g_elem = ET.Element(f'{{{SVG_NS}}}g')
     g_elem.set('id', group.name or prefix)
-    if group.is_mask_group:
+    if effective_mask:
         g_elem.set('data-forza-mask-group', '1')
     parent.append(g_elem)
     for idx, child in enumerate(group.children):
         child_prefix = f"{prefix}_{idx+1}"
         if isinstance(child, GroupNode):
-            append_svg_group(g_elem, child, href_by_word, symbol_dict, canvas_w, canvas_h, child_prefix)
+            append_svg_group(
+                g_elem, child, href_by_word, symbol_dict, canvas_w, canvas_h,
+                child_prefix, effective_mask
+            )
         else:
             href = href_by_word.get(child.shape_word)
             if href:
-                append_svg_shape(g_elem, child, href, symbol_dict, canvas_w, canvas_h, f"shape_{child_prefix}")
+                append_svg_shape(
+                    g_elem, child, href, symbol_dict, canvas_w, canvas_h,
+                    f"shape_{child_prefix}", effective_mask
+                )
 
 
 # Definition cleanup
@@ -530,22 +560,41 @@ def prune_unused_defs(root):
 
 # C_group export
 
-def export_cgroup_to_svg(cgroup_path, svg_path):
+def export_group_to_svg(root_group, svg_path):
     from .library import add_referenced_defs, load_symbol_library
-    from .cgroup_codec import decode_cgroup_payload, unwrap_cgroup_file
+    from .model import iter_shapes
 
-    root_group = decode_cgroup_payload(unwrap_cgroup_file(cgroup_path))
     symbol_dict, href_by_word, symbol_elements = load_symbol_library()
+    missing_words = sorted({
+        shape.shape_word for shape in iter_shapes(root_group)
+        if shape.shape_word not in href_by_word
+    })
+    if missing_words:
+        formatted = ', '.join(f'0x{word:04x}' for word in missing_words)
+        raise ValueError(f"C_group uses unsupported shape IDs: {formatted}")
+
     tree, root, defs, target_container = create_inkscape_document()
     canvas_w, canvas_h = 1920.0, 1080.0
     for idx, child in enumerate(root_group.children):
         child_prefix = f"forza_{idx+1}"
         if isinstance(child, GroupNode):
-            append_svg_group(target_container, child, href_by_word, symbol_dict, canvas_w, canvas_h, child_prefix)
+            append_svg_group(
+                target_container, child, href_by_word, symbol_dict,
+                canvas_w, canvas_h, child_prefix, root_group.is_mask_group
+            )
         else:
             href = href_by_word.get(child.shape_word)
-            if href:
-                append_svg_shape(target_container, child, href, symbol_dict, canvas_w, canvas_h, f"shape_{child_prefix}")
+            append_svg_shape(
+                target_container, child, href, symbol_dict, canvas_w, canvas_h,
+                f"shape_{child_prefix}", root_group.is_mask_group
+            )
     add_referenced_defs(root, defs, symbol_elements)
     prune_unused_defs(root)
     write_inkscape_svg(tree, svg_path)
+
+
+def export_cgroup_to_svg(cgroup_path, svg_path):
+    from .cgroup_codec import decode_cgroup_payload, unwrap_cgroup_file
+
+    root_group = decode_cgroup_payload(unwrap_cgroup_file(cgroup_path))
+    export_group_to_svg(root_group, svg_path)

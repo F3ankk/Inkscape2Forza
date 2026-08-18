@@ -647,7 +647,7 @@ def workflow_export_svg():
 
     ui.log(tr("[3/3] 正在导出 SVG...", "[3/3] Exporting SVG..."))
     try:
-        svg_codec.export_cgroup_to_svg(selected_group["path"], save_path)
+        svg_codec.export_group_to_svg(exported_root, save_path)
     except Exception as e:
         ui.log(tr(f"导出失败：{e}", f"Export failed: {e}"))
         return

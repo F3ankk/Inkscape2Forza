@@ -21,10 +21,7 @@ MAX_CGROUP_PAYLOAD_BYTES = 16 * 1024 * 1024
 # Fixed shape ID flags.
 SHAPE_ID_FIXED_BITS = 0x0200
 SHAPE_ID_MASK_BIT = 0x00000001
-TRANSFORM_MARKERS = (
-    b'\x00\x01\x01\x01\x03', b'\xdf\x03\x03', b'\x00\x01\x01\x03',
-    b'\x00\x01\x03', b'\x03\x03', b'\x00\x03', b'\x01\x03', b'\x03',
-)
+SHAPE_ID_ALIASES = {0x07d0: 0x07d1}
 
 if os.name == 'nt':
     class _FileTime(ctypes.Structure):
@@ -49,6 +46,15 @@ if os.name == 'nt':
         ctypes.POINTER(_FileTime),
     )
     _set_file_time.restype = wintypes.BOOL
+    _create_file = _kernel32.CreateFileW
+    _create_file.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    _create_file.restype = wintypes.HANDLE
+    _close_handle = _kernel32.CloseHandle
+    _close_handle.argtypes = (wintypes.HANDLE,)
+    _close_handle.restype = wintypes.BOOL
     _get_file_security = _advapi32.GetFileSecurityW
     _get_file_security.argtypes = (
         wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPVOID,
@@ -58,6 +64,12 @@ if os.name == 'nt':
 
 _DACL_SECURITY_INFORMATION = 0x00000004
 _ERROR_INSUFFICIENT_BUFFER = 122
+_FILE_ATTRIBUTE_READONLY = 0x00000001
+_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_GENERIC_READ = 0x80000000
+_FILE_WRITE_ATTRIBUTES = 0x00000100
+_FILE_SHARE_ALL = 0x00000007
+_OPEN_EXISTING = 3
 
 def build_layer_bytes(shape_word, rot, tx, ty, sx, sy, skew, r, g, b, a, is_masked_by_prev=False):
     shape_id = (shape_word << 16) | SHAPE_ID_FIXED_BITS
@@ -358,6 +370,7 @@ def snapshot_file_metadata(path):
             raise ctypes.WinError(ctypes.get_last_error())
         dacl = descriptor.raw[:required.value]
     return {
+        'file_id': stat_result.st_ino,
         'atime_ns': stat_result.st_atime_ns,
         'mtime_ns': stat_result.st_mtime_ns,
         'birthtime_ns': getattr(stat_result, 'st_birthtime_ns', None),
@@ -377,19 +390,53 @@ def prevent_automatic_time_updates(file_obj, access=True, write=False):
         raise ctypes.WinError(ctypes.get_last_error())
 
 
-def read_file_preserving_metadata(path):
-    mode = 'r+b' if os.name == 'nt' else 'rb'
-    with open(path, mode) as file_obj:
-        prevent_automatic_time_updates(file_obj)
+def read_file_read_only(path):
+    if os.name == 'nt':
+        handle = _create_file(
+            os.path.abspath(path), _GENERIC_READ | _FILE_WRITE_ATTRIBUTES,
+            _FILE_SHARE_ALL, None, _OPEN_EXISTING, _FILE_ATTRIBUTE_NORMAL, None,
+        )
+        if handle != wintypes.HANDLE(-1).value:
+            unchanged = _FileTime(0xffffffff, 0xffffffff)
+            if _set_file_time(handle, None, ctypes.byref(unchanged), None):
+                try:
+                    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+                except Exception:
+                    _close_handle(handle)
+                    raise
+                with os.fdopen(descriptor, 'rb') as file_obj:
+                    return file_obj.read()
+            _close_handle(handle)
+    with open(path, 'rb') as file_obj:
         return file_obj.read()
+
+
+def _filetime_from_ns(timestamp_ns):
+    ticks = timestamp_ns // 100 + 116444736000000000
+    return _FileTime(ticks & 0xffffffff, ticks >> 32)
 
 
 def restore_file_metadata(path, metadata):
     absolute_path = os.path.abspath(path)
-    if os.name == 'nt' and not _set_file_attributes(
-            absolute_path, metadata['attributes']):
-        raise ctypes.WinError(ctypes.get_last_error())
+    if os.name == 'nt':
+        with open(path, 'r+b') as file_obj:
+            handle = wintypes.HANDLE(msvcrt.get_osfhandle(file_obj.fileno()))
+            creation = (_filetime_from_ns(metadata['birthtime_ns'])
+                        if metadata['birthtime_ns'] is not None else None)
+            access = _filetime_from_ns(metadata['atime_ns'])
+            write = _filetime_from_ns(metadata['mtime_ns'])
+            if not _set_file_time(
+                    handle,
+                    ctypes.byref(creation) if creation is not None else None,
+                    ctypes.byref(access), ctypes.byref(write)):
+                raise ctypes.WinError(ctypes.get_last_error())
+        if not _set_file_attributes(absolute_path, metadata['attributes']):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        os.utime(path, ns=(metadata['atime_ns'], metadata['mtime_ns']))
     current_metadata = snapshot_file_metadata(path)
+    if current_metadata['file_id'] != metadata['file_id']:
+        raise OSError("Failed to preserve file identity")
     birthtime_ns = metadata['birthtime_ns']
     if (birthtime_ns is not None
             and current_metadata['birthtime_ns'] != birthtime_ns):
@@ -399,36 +446,49 @@ def restore_file_metadata(path, metadata):
             raise OSError("Failed to preserve Windows file attributes")
         if current_metadata['dacl'] != metadata['dacl']:
             raise OSError("Failed to preserve file permissions")
-    os.utime(path, ns=(metadata['atime_ns'], metadata['mtime_ns']))
-    current = os.stat(path)
-    if current.st_atime_ns != metadata['atime_ns']:
+    if current_metadata['atime_ns'] != metadata['atime_ns']:
         raise OSError("Failed to preserve file access time")
-    if current.st_mtime_ns != metadata['mtime_ns']:
+    if current_metadata['mtime_ns'] != metadata['mtime_ns']:
         raise OSError("Failed to preserve file modification time")
 
 
 def overwrite_file_preserving_metadata(target, replacement, metadata):
-    with open(replacement, 'rb') as source, open(target, 'r+b') as destination:
-        prevent_automatic_time_updates(destination, access=True, write=True)
-        shutil.copyfileobj(source, destination, length=1024 * 1024)
-        destination.truncate()
-        destination.flush()
-        os.fsync(destination.fileno())
-    restore_file_metadata(target, metadata)
+    attributes_changed = False
+    if os.name == 'nt' and metadata['attributes'] & _FILE_ATTRIBUTE_READONLY:
+        writable_attributes = metadata['attributes'] & ~_FILE_ATTRIBUTE_READONLY
+        if writable_attributes == 0:
+            writable_attributes = _FILE_ATTRIBUTE_NORMAL
+        if not _set_file_attributes(os.path.abspath(target), writable_attributes):
+            raise ctypes.WinError(ctypes.get_last_error())
+        attributes_changed = True
+    try:
+        with open(replacement, 'rb') as source, open(target, 'r+b') as destination:
+            prevent_automatic_time_updates(destination, access=True, write=True)
+            shutil.copyfileobj(source, destination, length=1024 * 1024)
+            destination.truncate()
+            destination.flush()
+            os.fsync(destination.fileno())
+        restore_file_metadata(target, metadata)
+    except Exception:
+        if attributes_changed:
+            _set_file_attributes(os.path.abspath(target), metadata['attributes'])
+        raise
 
 
 def write_cgroup_file(target_cgroup, root_group, shape_half_extents=None):
     """Safely replace a valid C_group and its header."""
     cgroup_metadata = snapshot_file_metadata(target_cgroup)
-    checked_data = read_file_preserving_metadata(target_cgroup)
-    validate_cgroup_data(checked_data)
+    checked_data = read_file_read_only(target_cgroup)
+    decode_cgroup_payload(validate_cgroup_data(checked_data))
 
-    new_data = wrap_cgroup_payload(build_cgroup_payload(root_group, shape_half_extents))
-    validate_cgroup_data(new_data)
     layer_count = count_shapes(root_group)
+    new_data = wrap_cgroup_payload(build_cgroup_payload(root_group, shape_half_extents))
+    decoded_new_root = decode_cgroup_payload(validate_cgroup_data(new_data))
+    if count_shapes(decoded_new_root) != layer_count:
+        raise ValueError("Generated C_group layer count mismatch")
     header_path = os.path.join(os.path.dirname(target_cgroup), "header")
     header_metadata = snapshot_file_metadata(header_path)
-    old_header_data = read_file_preserving_metadata(header_path)
+    old_header_data = read_file_read_only(header_path)
     new_header_data = update_header_layer_count(old_header_data, layer_count)
 
     target_dir = os.path.dirname(target_cgroup)
@@ -460,6 +520,16 @@ def write_cgroup_file(target_cgroup, root_group, shape_half_extents=None):
             pass
 
         validate_cgroup_data(checked_data)
+        current_cgroup_metadata = snapshot_file_metadata(target_cgroup)
+        current_header_metadata = snapshot_file_metadata(header_path)
+        stable_keys = ('file_id', 'mtime_ns', 'birthtime_ns', 'attributes', 'dacl')
+        if (read_file_read_only(target_cgroup) != checked_data
+                or read_file_read_only(header_path) != old_header_data
+                or any(current_cgroup_metadata[key] != cgroup_metadata[key]
+                       for key in stable_keys)
+                or any(current_header_metadata[key] != header_metadata[key]
+                       for key in stable_keys)):
+            raise RuntimeError("The target save changed while preparing the import")
         cgroup_attempted = True
         overwrite_file_preserving_metadata(
             target_cgroup, temp_cgroup, cgroup_metadata
@@ -514,7 +584,7 @@ def read_utf16(data, offset, char_count):
 
 def parse_header(header_path):
     try:
-        data = read_file_preserving_metadata(header_path)
+        data = read_file_read_only(header_path)
         if len(data) < 8:
             return "Error", "Error"
         magic, off = read_u32(data, 0)
@@ -558,49 +628,115 @@ def validate_cgroup_data(data):
         raise ValueError("Invalid C_group magic")
     if payload[0x1d] not in (GROUP_MARKER_NORMAL, GROUP_MARKER_MASK):
         raise ValueError("Invalid C_group root marker")
+    if len(payload) < 0x24:
+        raise ValueError("Truncated C_group root header")
+    root_marker = payload[0x0c]
+    if root_marker not in (0x02, 0x03):
+        raise ValueError("Unsupported root transform marker")
+    px, py, scale, rot = struct.unpack_from('<ffff', payload, 0x0d)
+    if not (all(math.isfinite(value) for value in (px, py, scale, rot))
+            and abs(px) < 50000.0 and abs(py) < 50000.0
+            and 0.0001 <= abs(scale) <= 200.0 and abs(rot) <= 10000.0):
+        raise ValueError("Invalid root transform")
+    count = struct.unpack_from('<H', payload, 0x1e)[0]
+    blocks = struct.unpack_from('<H', payload, 0x20)[0]
+    if count <= 0 or blocks != (count + 7) // 8 or 0x24 + blocks > len(payload):
+        raise ValueError("Invalid root child bitmap")
     return payload
 
 
 def unwrap_cgroup_file(cgroup_path):
-    data = read_file_preserving_metadata(cgroup_path)
+    data = read_file_read_only(cgroup_path)
     return validate_cgroup_data(data)
 
 
-def parse_shape_record(data, offset):
+def parse_shape_record(data, offset, shape_marker=0x02):
+    if offset >= len(data):
+        raise ValueError(f"Missing shape record at 0x{offset:x}")
     lead = data[offset]
-    if lead in (0x00, 0x01) and offset + 32 <= len(data) and data[offset + 1] == 0x02:
-        shape_word = struct.unpack_from('<H', data, offset + 2)[0]
+    if (lead in (0x00, 0x01) and offset + 32 <= len(data)
+            and data[offset + 1] == shape_marker):
+        encoded_word = struct.unpack_from('<H', data, offset + 2)[0]
+        shape_word = SHAPE_ID_ALIASES.get(encoded_word, encoded_word)
         rot, tx, ty, sx, sy, skew = struct.unpack_from('<ffffff', data, offset + 4)
         b, g, r, a = struct.unpack_from('<BBBB', data, offset + 28)
-        return ShapeNode(shape_word, rot, tx, ty, sx, sy, skew, r, g, b, a, False), offset + 32, lead == 0x01
-    if lead == 0x02 and offset + 31 <= len(data):
-        shape_word = struct.unpack_from('<H', data, offset + 1)[0]
+        next_offset = offset + 32
+        marks_previous = lead == 0x01
+    elif lead == shape_marker and offset + 31 <= len(data):
+        encoded_word = struct.unpack_from('<H', data, offset + 1)[0]
+        shape_word = SHAPE_ID_ALIASES.get(encoded_word, encoded_word)
         rot, tx, ty, sx, sy, skew = struct.unpack_from('<ffffff', data, offset + 3)
         b, g, r, a = struct.unpack_from('<BBBB', data, offset + 27)
-        return ShapeNode(shape_word, rot, tx, ty, sx, sy, skew, r, g, b, a, False), offset + 31, False
-    raise ValueError(f"Unsupported shape record at 0x{offset:x}")
+        next_offset = offset + 31
+        marks_previous = False
+    else:
+        raise ValueError(f"Unsupported shape record at 0x{offset:x}")
+    values = (rot, tx, ty, sx, sy, skew)
+    if not (all(math.isfinite(value) for value in values)
+            and abs(rot) <= 10000.0 and abs(tx) < 50000.0 and abs(ty) < 50000.0
+            and 1e-6 < abs(sx) < 200.0 and 1e-6 < abs(sy) < 5000.0
+            and abs(skew) < 200.0):
+        raise ValueError(f"Invalid shape transform at 0x{offset:x}")
+    return (
+        ShapeNode(shape_word, rot, tx, ty, sx, sy, skew, r, g, b, a, False),
+        next_offset, marks_previous,
+    )
 
 
-def parse_optional_transform_record(data, offset):
-    for marker in TRANSFORM_MARKERS:
+def transform_markers_at(data, offset, terminator=0x03):
+    markers = []
+    if offset >= len(data):
+        return markers
+    if data[offset] == 0x00:
+        cursor = offset + 1
+        while cursor < len(data) and data[cursor] == 0x01:
+            cursor += 1
+        if cursor < len(data) and data[cursor] == terminator:
+            markers.append(bytes(data[offset:cursor + 1]))
+    lead = data[offset]
+    if lead & 0x01:
+        if (offset + 3 <= len(data)
+                and data[offset + 1] == terminator
+                and data[offset + 2] == terminator):
+            markers.append(bytes(data[offset:offset + 3]))
+        if offset + 2 <= len(data) and data[offset + 1] == terminator:
+            markers.append(bytes(data[offset:offset + 2]))
+    if lead == terminator and offset + 2 <= len(data) and data[offset + 1] == terminator:
+        markers.append(bytes(data[offset:offset + 2]))
+    if lead == terminator:
+        markers.append(bytes(data[offset:offset + 1]))
+    return sorted(set(markers), key=len, reverse=True)
+
+
+def parse_optional_transform_record(data, offset, terminator=0x03):
+    for marker in transform_markers_at(data, offset, terminator):
         end = offset + len(marker)
         payload_end = end + 16
-        if payload_end <= len(data) and data[offset:end] == marker:
+        if payload_end <= len(data):
             px, py, scale_x, rot = struct.unpack_from('<ffff', data, end)
+            if not (all(math.isfinite(value) for value in (px, py, scale_x, rot))
+                    and abs(px) < 50000.0 and abs(py) < 50000.0
+                    and 0.0001 <= abs(scale_x) <= 200.0 and abs(rot) <= 10000.0):
+                continue
             scale_y = scale_x
             next_offset = payload_end
             if next_offset + 5 <= len(data) and data[next_offset] in (0x30, 0x70):
                 scale_y = struct.unpack_from('<f', data, next_offset + 1)[0]
+                if not math.isfinite(scale_y) or not 0.0001 <= abs(scale_y) <= 5000.0:
+                    continue
                 next_offset += 5
-            return (px, py, scale_x, scale_y, rot), next_offset
-    return None, offset
+            return (px, py, scale_x, scale_y, rot), next_offset, marker
+    return None, offset, b''
 
 
-def skip_group_to_shape_control(data, offset):
-    if offset < len(data) and data[offset] == 0x00 and not (offset + 1 < len(data) and data[offset + 1] == 0x02):
+def skip_group_to_shape_control(data, offset, shape_marker=0x02):
+    while offset < len(data) and data[offset] in (0x00, 0x01):
+        try:
+            parse_shape_record(data, offset, shape_marker)
+            break
+        except ValueError:
+            pass
         offset += 1
-        while offset < len(data) and data[offset] == 0x01 and not (offset + 1 < len(data) and data[offset + 1] == 0x02):
-            offset += 1
     return offset
 
 
@@ -628,86 +764,156 @@ def apply_group_transform(group, transform):
             apply_group_transform_to_shape(child, transform)
 
 
-def decode_children(data, offset, count, bitmap, inherited_mask=False):
+def terminal_shape(node):
+    current = node
+    while isinstance(current, GroupNode):
+        if not current.children:
+            return None
+        current = current.children[-1]
+    return current if isinstance(current, ShapeNode) else None
+
+
+def mark_previous_mask(children, through_groups=False):
+    if not children:
+        return
+    previous = children[-1]
+    if isinstance(previous, GroupNode) and not through_groups:
+        return
+    shape = terminal_shape(previous)
+    if shape is not None:
+        shape.is_mask = True
+
+
+def decode_children(data, offset, count, bitmap, inherited_mask=False,
+                    shape_marker=0x02, transform_terminator=0x03,
+                    trailing_mask_state=True):
     children = []
     for idx in range(count):
-        if offset < len(data) and data[offset] == 0x01 and (offset + 1 >= len(data) or data[offset + 1] != 0x02):
-            if children:
-                last = children[-1]
-                if isinstance(last, GroupNode):
-                    last.is_mask_group = True
-                else:
-                    last.is_mask = True
-            offset += 1
-
         is_group = bool(bitmap[idx // 8] & (1 << (idx % 8))) if bitmap else False
         if is_group:
-            transform, offset = parse_optional_transform_record(data, offset)
-            child, offset = decode_group_record(data, offset, inherited_mask)
+            transform, offset, transform_marker = parse_optional_transform_record(
+                data, offset, transform_terminator
+            )
+            if (trailing_mask_state and transform_marker
+                    and transform_marker[0] & 0x01):
+                mark_previous_mask(children, through_groups=True)
+            if (transform is None and (offset >= len(data) or data[offset] not in (
+                    GROUP_MARKER_NORMAL, GROUP_MARKER_MASK))):
+                raise ValueError(f"Markerless group without transform at 0x{offset:x}")
+            child, offset = decode_group_record(
+                data, offset, inherited_mask, shape_marker,
+                transform_terminator, trailing_mask_state
+            )
             if transform:
                 apply_group_transform(child, transform)
             children.append(child)
         else:
-            offset = skip_group_to_shape_control(data, offset)
-            shape, offset, marks_previous = parse_shape_record(data, offset)
-            if marks_previous and children:
-                last = children[-1]
-                if isinstance(last, GroupNode):
-                    last.is_mask_group = True
-                else:
-                    last.is_mask = True
+            offset = skip_group_to_shape_control(
+                data, offset, shape_marker
+            )
+            shape, offset, marks_previous = parse_shape_record(data, offset, shape_marker)
+            if trailing_mask_state and marks_previous:
+                mark_previous_mask(children)
             shape.is_mask = inherited_mask
             children.append(shape)
 
-    if offset < len(data) and data[offset] == 0x01 and (offset + 1 >= len(data) or data[offset + 1] != 0x02):
-        if children:
-            last = children[-1]
-            if isinstance(last, GroupNode):
-                last.is_mask_group = True
-            else:
-                last.is_mask = True
+    if (trailing_mask_state and offset < len(data) and data[offset] == 0x01
+            and (offset + 1 >= len(data) or data[offset + 1] != shape_marker)):
+        mark_previous_mask(children, through_groups=True)
         offset += 1
     return children, offset
 
 
-def decode_group_record(data, offset, inherited_mask=False):
+def decode_group_record(data, offset, inherited_mask=False, shape_marker=0x02,
+                        transform_terminator=0x03, trailing_mask_state=True):
+    if offset >= len(data):
+        raise ValueError(f"Missing group record at 0x{offset:x}")
     marker = data[offset]
     if marker in (GROUP_MARKER_NORMAL, GROUP_MARKER_MASK):
+        if offset + 7 > len(data):
+            raise ValueError(f"Truncated group header at 0x{offset:x}")
         count = struct.unpack_from('<H', data, offset + 1)[0]
         blocks = struct.unpack_from('<H', data, offset + 3)[0]
         bitmap_start = offset + 7
     else:
         marker = GROUP_MARKER_NORMAL
+        if offset + 6 > len(data):
+            raise ValueError(f"Truncated markerless group at 0x{offset:x}")
         count = struct.unpack_from('<H', data, offset)[0]
         blocks = struct.unpack_from('<H', data, offset + 2)[0]
         bitmap_start = offset + 6
+    expected_blocks = (count + 7) // 8
+    if count <= 0 or blocks != expected_blocks:
+        raise ValueError(f"Invalid group child bitmap at 0x{offset:x}")
+    if bitmap_start + blocks > len(data):
+        raise ValueError(f"Truncated group bitmap at 0x{offset:x}")
     bitmap = data[bitmap_start:bitmap_start + blocks]
     child_offset = bitmap_start + blocks
+    group_transform = None
+    if not (bitmap[0] & 0x01):
+        candidate, candidate_offset, _ = parse_optional_transform_record(
+            data, child_offset, transform_terminator
+        )
+        if candidate is not None:
+            shape_offset = skip_group_to_shape_control(
+                data, candidate_offset, shape_marker
+            )
+            try:
+                parse_shape_record(data, shape_offset, shape_marker)
+            except ValueError:
+                pass
+            else:
+                group_transform = candidate
+                child_offset = candidate_offset
     group = GroupNode(is_mask_group=(marker == GROUP_MARKER_MASK) or inherited_mask)
-    group.children, child_offset = decode_children(data, child_offset, count, bitmap, group.is_mask_group)
+    group.children, child_offset = decode_children(
+        data, child_offset, count, bitmap, group.is_mask_group,
+        shape_marker, transform_terminator, trailing_mask_state
+    )
+    if group_transform is not None:
+        apply_group_transform(group, group_transform)
     return group, child_offset
 
 
-def find_root_group_offset(payload):
-    marker_start = 0x0c
-    for marker in TRANSFORM_MARKERS:
-        end = marker_start + len(marker)
-        root_offset = end + 16
-        if payload[marker_start:end] == marker and root_offset < len(payload) and payload[root_offset] in (GROUP_MARKER_NORMAL, GROUP_MARKER_MASK):
-            return root_offset
-    raise ValueError("Unsupported root transform marker")
-
-
 def decode_cgroup_payload(payload):
-    if payload[:4] != b'gyvl':
+    if len(payload) < 0x24 or payload[:4] != b'gyvl':
         raise ValueError("Invalid C_group payload")
-    root_offset = find_root_group_offset(payload)
+    root_transform_marker = payload[0x0c]
+    if root_transform_marker not in (0x02, 0x03):
+        raise ValueError("Unsupported root transform marker")
+    root_offset = 0x1d
     root_marker = payload[root_offset]
     if root_marker not in (GROUP_MARKER_NORMAL, GROUP_MARKER_MASK):
         raise ValueError("Unsupported root group marker")
     count = struct.unpack_from('<H', payload, root_offset + 1)[0]
     blocks = struct.unpack_from('<H', payload, root_offset + 3)[0]
+    expected_blocks = (count + 7) // 8
+    if count <= 0 or blocks != expected_blocks:
+        raise ValueError("Invalid root child bitmap")
     bitmap_start = root_offset + 7
+    if bitmap_start + blocks > len(payload):
+        raise ValueError("Truncated root child bitmap")
     bitmap = payload[bitmap_start:bitmap_start + blocks]
-    children, _ = decode_children(payload, bitmap_start + blocks, count, bitmap, root_marker == GROUP_MARKER_MASK)
-    return GroupNode(children=children, is_mask_group=(root_marker == GROUP_MARKER_MASK), name="root")
+    generation2 = root_transform_marker == 0x02
+    children, _ = decode_children(
+        payload, bitmap_start + blocks, count, bitmap,
+        root_marker == GROUP_MARKER_MASK,
+        0x01 if generation2 else 0x02,
+        0x02 if generation2 else 0x03,
+        not generation2,
+    )
+    root = GroupNode(
+        children=children,
+        is_mask_group=(root_marker == GROUP_MARKER_MASK),
+        name="root",
+    )
+    px, py, scale, rot = struct.unpack_from('<ffff', payload, 0x0d)
+    root_transform = (px, py, scale, scale, rot)
+    if not (all(math.isfinite(value) for value in root_transform)
+            and abs(px) < 50000.0 and abs(py) < 50000.0
+            and 0.0001 <= abs(scale) <= 200.0 and abs(rot) <= 10000.0):
+        raise ValueError("Invalid root transform")
+    apply_group_transform(root, root_transform)
+    if count_shapes(root) > MAX_VINYL_GROUP_LAYERS:
+        raise ValueError(f"C_group exceeds {MAX_VINYL_GROUP_LAYERS} layers")
+    return root

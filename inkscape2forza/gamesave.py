@@ -124,8 +124,7 @@ def get_target_layer_groups(containers_root):
 
         if os.path.exists(c_group_path) and os.path.exists(header_path):
             try:
-                with open(c_group_path, 'rb') as f:
-                    checked_data = f.read()
+                checked_data = cgroup_codec.read_file_read_only(c_group_path)
                 cgroup_codec.validate_cgroup_data(checked_data)
             except Exception:
                 continue
