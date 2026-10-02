@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 
 from PIL import ImageColor
 
-from .common import INKSCAPE_NS, SODIPODI_NS, SVG_NS, XLINK_NS
+from .common import SVG_NS, XLINK_NS
 from .model import GroupNode, ShapeNode
 
 
@@ -213,21 +213,23 @@ def decompose_matrix(a, b, c, d, e, f, min_x, min_y, canvas_x, canvas_y, canvas_
 
 # Visibility
 
-def detect_mask_element(elem, pattern_dict, properties=None):
-    elem_id = elem.get('id', '').lower()
+def detect_mask_element(elem, pattern_dict, inherited_fill=None, properties=None):
     properties = properties if properties is not None else style_properties(elem)
-    style_str = ';'.join(f'{name}:{value}' for name, value in properties.items()).lower()
-    fill_attr = str(style_value(elem, 'fill', properties) or '').lower()
-    if elem.get('data-forza-mask-group') == '1':
-        return True
-    url_match = re.search(r'url\((\#[^)]+)\)', style_str) or re.search(r'url\((\#[^)]+)\)', fill_attr)
-    resolved_href = pattern_dict.get(url_match.group(1), '').lower() if url_match else ""
-    return bool(
-        elem_id.startswith('mask') or
-        'destination-out' in style_str or
-        'mask_indicator' in resolved_href or
-        (url_match and 'mask_indicator' in url_match.group(1).lower())
-    )
+    fill = style_value(elem, 'fill', properties)
+    if fill is None or str(fill).strip().lower() == 'inherit':
+        fill = inherited_fill
+    match = re.fullmatch(r'''url\(\s*['"]?#([^'"\s)]+)['"]?\s*\)''', str(fill or '').strip(), re.IGNORECASE)
+    if not match:
+        return False
+    reference = f'#{match.group(1)}'
+    indicators = {'#mask_indicator_dark', '#mask_indicator_light'}
+    seen = set()
+    while reference in pattern_dict and reference not in seen:
+        if reference in indicators:
+            return True
+        seen.add(reference)
+        reference = pattern_dict[reference]
+    return False
 
 
 def element_visibility(elem, inherited_visibility='visible', properties=None):
@@ -272,9 +274,8 @@ def collect_svg_defs(root):
                         symbol_dict[f"#{symbol_id}"] = values[:2]
         elif local == 'pattern':
             pattern_id = elem.get('id')
-            href = get_href(elem)
-            if pattern_id and href:
-                pattern_dict[f"#{pattern_id}"] = href
+            if pattern_id:
+                pattern_dict[f"#{pattern_id}"] = get_href(elem)
     return symbol_dict, pattern_dict
 
 
@@ -299,11 +300,11 @@ def process_svg(svg_path):
 
     total_fh6_nodes = 0
 
-    def parse_children(parent, parent_matrix, inherited_mask=False,
-                       inherited_opacity=1.0, inherited_fill_opacity=1.0,
+    def parse_children(parent, parent_matrix, inherited_opacity=1.0,
+                       inherited_fill_opacity=1.0,
                        inherited_fill=None, inherited_visibility='visible'):
         nonlocal total_fh6_nodes
-        group = GroupNode(name=parent.get('id', ''), is_mask_group=inherited_mask)
+        group = GroupNode(name=parent.get('id', ''))
 
         for elem in list(parent):
             local = get_local_name(elem)
@@ -319,7 +320,6 @@ def process_svg(svg_path):
                 )
                 if not displayed:
                     continue
-                child_is_mask = inherited_mask or detect_mask_element(elem, pattern_dict, properties)
                 group_opacity = inherited_opacity * opacity_value(
                     style_value(elem, 'opacity', properties)
                 )
@@ -330,7 +330,7 @@ def process_svg(svg_path):
                 if group_fill is None or str(group_fill).strip().lower() == 'inherit':
                     group_fill = inherited_fill
                 child_group = parse_children(
-                    elem, elem_matrix, child_is_mask, group_opacity, group_fill_opacity,
+                    elem, elem_matrix, group_opacity, group_fill_opacity,
                     group_fill, visibility
                 )
                 if child_group.children:
@@ -347,7 +347,7 @@ def process_svg(svg_path):
 
             total_fh6_nodes += 1
             properties = properties_for(elem)
-            is_current_mask = inherited_mask or detect_mask_element(elem, pattern_dict, properties)
+            is_current_mask = detect_mask_element(elem, pattern_dict, inherited_fill, properties)
             displayed, visibility = element_visibility(
                 elem, inherited_visibility, properties
             )
@@ -386,7 +386,7 @@ def process_svg(svg_path):
     root_fill_opacity = opacity_value(style_value(root, 'fill-opacity', root_properties))
     root_fill = style_value(root, 'fill', root_properties)
     root_group = parse_children(
-        root, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0), False,
+        root, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
         root_opacity, root_fill_opacity, root_fill, root_visibility
     )
     return root_group, total_fh6_nodes
@@ -397,11 +397,8 @@ def process_svg(svg_path):
 def write_inkscape_svg(tree, svg_path):
     """Write an Inkscape-compatible SVG."""
     ET.register_namespace('', SVG_NS)
-    ET.register_namespace('inkscape', INKSCAPE_NS)
-    ET.register_namespace('sodipodi', SODIPODI_NS)
     ET.register_namespace('xlink', XLINK_NS)
     root = tree.getroot()
-    root.set(f'{{{SODIPODI_NS}}}docname', os.path.basename(svg_path))
     ET.indent(tree, space='  ')
     output_dir = os.path.dirname(os.path.abspath(svg_path))
     temp_path = None
@@ -430,12 +427,6 @@ def create_inkscape_document():
     root = ET.Element(f'{{{SVG_NS}}}svg', {
         'width': '1920', 'height': '1080', 'viewBox': '0 0 1920 1080',
         'version': '1.1', 'id': 'svg1402',
-    })
-    root.set(f'{{{INKSCAPE_NS}}}version', '1.4')
-    ET.SubElement(root, f'{{{SODIPODI_NS}}}namedview', {
-        'id': 'namedview1402', 'pagecolor': '#505050',
-        f'{{{INKSCAPE_NS}}}pageopacity': '0',
-        f'{{{INKSCAPE_NS}}}pagecheckerboard': '1',
     })
     defs = ET.SubElement(root, f'{{{SVG_NS}}}defs', {'id': 'defs1402'})
     # Avoid an extra FH6 subgroup.
@@ -472,7 +463,6 @@ def append_svg_shape(parent, shape, href, symbol_dict, canvas_w, canvas_h, node_
     svg_cy = canvas_h / 2.0 - shape.ty
     if inherited_mask or shape.is_mask:
         fill = "url(#mask_indicator_dark)"
-        node_id = node_id.replace('shape', 'mask')
     else:
         fill = f"#{shape.r:02x}{shape.g:02x}{shape.b:02x}"
     append_shape_use(parent, href, symbol_dict, svg_cx, svg_cy, shape.sx, shape.sy,
@@ -484,8 +474,6 @@ def append_svg_group(parent, group, href_by_word, symbol_dict, canvas_w, canvas_
     effective_mask = inherited_mask or group.is_mask_group
     g_elem = ET.Element(f'{{{SVG_NS}}}g')
     g_elem.set('id', group.name or prefix)
-    if effective_mask:
-        g_elem.set('data-forza-mask-group', '1')
     parent.append(g_elem)
     for idx, child in enumerate(group.children):
         child_prefix = f"{prefix}_{idx+1}"

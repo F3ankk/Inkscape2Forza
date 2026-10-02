@@ -4,8 +4,6 @@ from pathlib import Path
 
 SVG_NS = 'http://www.w3.org/2000/svg'
 XLINK_NS = 'http://www.w3.org/1999/xlink'
-INKSCAPE_NS = 'http://www.inkscape.org/namespaces/inkscape'
-SODIPODI_NS = 'http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd'
 
 DEFAULT_GAMESAVE_DIR = r"C:\XboxGames\GameSave"
 MAX_VINYL_GROUP_LAYERS = 3000

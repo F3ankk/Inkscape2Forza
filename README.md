@@ -1,183 +1,253 @@
 # Inkscape2Forza
+
 <p align="center">
-  <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/00.jpg" alt="show" width="720">
+  <img src="img/00.jpg" alt="Inkscape2Forza" width="900">
 </p>
 
-基于 **Inkscape** 的《极限竞速：地平线 6》(Forza Horizon 6) 彩绘纹饰分组编辑方式。  
-A workflow for editing Forza Horizon 6 vinyl groups using **Inkscape**.
-
-本项目旨在绕过FH6笨拙的内置编辑器，使用更强大的桌面级编辑软件改善体验。利用 Inkscape，你可以像设计师一样进行高精度排版、临摹和图层管理，并注入到游戏存档中。  
-This project aims to bypass FH6’s clumsy built‑in editor by enabling desktop‑grade editing. With Inkscape, you can design with precision, trace images, manage layers like a professional, and inject the result into the game save.
-
-## 核心特性 / Key Features
-
-* **精准复刻的素材库**：编辑模板内置了高度精确的符号库，包含了《极限竞速：地平线 6》中**全部 1400 种**基础几何元素。  
-  **Accurate symbol library**: The template includes a precisely recreated symbol set containing **all 1400 base geometric shapes** from Forza Horizon 6.
-
-  **v0.1.0 更新**：1400 个 FH6 符号改为可安装的 Inkscape 用户符号库；工作 SVG 仅嵌入实际使用的符号和图案，因此保持轻量且可独立分发。  
-  **v0.1.0 update**: The 1400 FH6 shapes are now installed as an Inkscape user symbol library. Working SVGs embed only the symbols and patterns they use, keeping them small and portable.  
-
-* **彩绘纹饰分组导入/导出**：支持从 FH6 存档导出为可编辑 SVG。（仅支持导出自己创建的彩绘纹饰分组）  
-  **Vinyl group import/export**: Export editable SVGs from FH6 saves. (Only supports exporting vinyl groups you created.)
-
-* **完整的矢量编辑支持**：支持图形选择、着色、缩放、旋转、倾斜、透明度调整及图层层级排序，操作手感与Inkscape矢量设计操作几乎一致。  
-  **Full vector editing support**: Select, color, scale, rotate, skew, adjust opacity, and reorder layers—almost identical to native Inkscape vector editing.
-
-* **便于临摹**：支持直接在底层垫入高清 PNG/JPG 位图用于描边临摹，手绘痛车党必备。注入工具会自动过滤辅助图层。  
-  **Easy tracing**: You can place high‑resolution PNG/JPG images underneath for tracing. The injector automatically ignores non‑symbol layers.
-
-* **v1.0.0 正式版更新**：工具有了GUI界面。感谢群友YukiQWQ8492的适配工作。  
-  **v1.0.0 update**: the tool now has a GUI. Thanks to YukiQWQ8492 for the adaptation work.
-
-## 环境要求 / Requirements
-
-* **所需软件**：[Inkscape](https://inkscape.org/)  
-  **Required software**: [Inkscape](https://inkscape.org/)
-
-* **版本建议**：推荐使用 **v1.4.4 或以上版本**  
-  **Recommended version**: **v1.4.4 or later**
-
-## 启动工具 / Launch the Tool
-
-请在release页面下载最新的 `Inkscape2Forza.exe`，双击运行即可。
-Please download the latest `Inkscape2Forza.exe` from the release page and double-click to run.
-
-## 使用工作流指南 / Workflow Guide
-
-### 1. 准备画布 / Prepare the Canvas
-
-~~下载本项目提供的 [Inkscape SVG 模板文件](https://github.com/F3ankk/Inkscape2Forza/blob/main/inkscape_template.svg) 并打开。模板默认画布为 `1920x1080`。你可以将其另存为你的工作副本。~~  
-~~Download and open the [Inkscape SVG template file](https://github.com/F3ankk/Inkscape2Forza/blob/main/inkscape_template.svg) included in this project. The default canvas size is `1920x1080`. Save a working copy for your project.~~
-
-**v1.0.0 更新**：先点击“安装FH6符号库到Inkscape”功能卡片。它会安装 `FH6_Vinyl_Symbols.svg` 与 `FH6_Vinyl_Patterns.svg` 到当前用户的 Inkscape 资源目录。之后可直接新建空白 Inkscape 文档，并在 **Symbols** 面板插入 FH6 图形。推荐设定画布尺寸为`1920x1080`。
-
-**v1.0.0 update**: Click the “Install symbol library to Inkscape” action card first. It installs `FH6_Vinyl_Symbols.svg` and `FH6_Vinyl_Patterns.svg` into the current user's Inkscape resource directories. You can then create a blank Inkscape document and insert FH6 shapes from the **Symbols** panel. A `1920x1080` canvas size is recommended.
-
-**在此之前请确保已安装了Inkscape 1.4.4 或以上版本并初次运行过！！否则安装器无法找到安装位置**
-**Make sure you have installed Inkscape 1.4.4 or later and run it at least once before this step! Otherwise, the installer cannot find the installation path.**
-
-其他画布尺寸也可以导入；工具会将画布内容等比例适配到 FH6 的 `1920x1080` 坐标空间。非 16:9、极端宽高比或画布外内容可能导致显示偏差、留边或图案过小。  
-Other canvas sizes can also be imported. The tool fits the canvas uniformly into FH6's `1920x1080` coordinate space. Non-16:9 documents, extreme aspect ratios, or content outside the canvas may cause visible offsets, margins, or very small artwork.
-
-### 更新 / Update
-
-~~你现在可以直接使用工具内第一项功能生成空白模板~~，或使用 Geometrize JSON / Vinylizer JSON 生成模板。测试使用 [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) 和 [vinylizer](https://github.com/Heavenchaos/vinylizer) ，目前仅支持旋转椭圆 / 渐变柔边椭圆。  
-~~You can now generate a blank template directly using the first feature in the tool,~~ or generate a template from a Geometrize JSON / Vinylizer JSON file. Tested with the [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) and [vinylizer](https://github.com/Heavenchaos/vinylizer), currently supports rotated ellipses / soft ellipses.
-
-**v0.1.0 更新**：“安装 FH6 符号库”功能会将符号库安装到用户路径。符号不再内嵌在分发 SVG 中。
-
-**v0.1.0 update**: The “Install symbol library” action installs the library to the user path. Symbols are no longer embedded in the distributed SVG.
 <p align="center">
-  <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/04.jpg" alt="template_generate" width="720">
+  使用 Inkscape 编辑《极限竞速：地平线 6》彩绘纹饰分组，并在 SVG 与 FH6 存档之间导入、导出。
 </p>
 
-~~(蓝月痴收收味)~~
+> A Windows GUI tool for editing Forza Horizon 6 vinyl groups with Inkscape. This README is primarily written for Chinese users; see [English overview](#english-overview) for a short introduction.
 
-### 2. 编辑规范 / Editing Rules
+Inkscape2Forza 是一款独立的辅助工具，不是 Inkscape 扩展。它提供完整的 FH6 基础图形库，将 Inkscape 中的符号、变换、分组、颜色、透明度和蒙版转换为游戏能够读取的彩绘纹饰分组。
 
-请打开 Inkscape 的 **符号库 (Symbols)** 面板来调出基础图形。  
-Open the **Symbols** panel in Inkscape to access the base shapes.
+- 项目主页：<https://github.com/F3ankk/Inkscape2Forza>
+- 最新版本：[GitHub Releases](https://github.com/F3ankk/Inkscape2Forza/releases/latest)
+- 完整图文教程：[Bilibili 专栏](https://www.bilibili.com/opus/1236139150313259015)
 
-* ✅ **支持的操作**：从符号库拖出图形，并对其进行着色、缩放、旋转、倾斜、复制、调整透明度及改变图层顺序。  
-  **Allowed**: Drag symbols, recolor, scale, rotate, skew, duplicate, adjust opacity, and reorder layers.
+## 功能
 
-* 🚫 **严禁的操作**：  
-  **Forbidden actions**:
+- 内置 FH6 全部 1400 个基础图形，可安装为 Inkscape 符号库。
+- 将 Inkscape SVG 写入玩家自建的 FH6 彩绘纹饰分组。
+- 将玩家自建的彩绘纹饰分组导出为可继续编辑和分享的 SVG。
+- 支持颜色、透明度、平移、缩放、旋转、倾斜、镜像、图层顺序和嵌套分组。
+- 使用 `mask_indicator_dark` / `mask_indicator_light` 图案标记游戏蒙版。
+- 将 Geometrize 或 Vinylizer JSON 转换为 SVG。
+- 支持多存档账户，尽可能显示本机 Xbox Gamertag；无法解析时回退到 XUID。
+- 可将当前账户存档备份为 ZIP。
 
-    * **不要**使用“路径工具”等改变符号本身拓扑形状的操作。  
-      Do **not** modify symbol topology using path tools.
+## 开始前请注意
 
-    * **不要**添加符号库中不存在的新矢量图形。  
-      Do **not** add new vector shapes not included in the symbol library.
+> [!WARNING]
+> 本工具会直接修改本地游戏存档。使用前建议先点击“备份当前账户存档”，并确认左上角选中的账户正确。写入时请至少退出游戏内的彩绘纹饰分组编辑器；为避免云存档冲突，建议直接退出游戏。
 
-    * **不要**为符号填充无色或非蒙版纹理图案。  
-      Do **not** apply arbitrary pattern fills or textures.
+- 当前仅支持 **Forza Horizon 6 的 `C_group` 彩绘纹饰分组**，不处理整车涂装 `C_livery`。
+- 工具只列出本地自建的 `LayerGroup_0000_*` 分组，不列出下载得到的 UUID 分组。
+- 请尊重其他作者的作品。需要使用他人的分组时，应由原作者本人导出 SVG 并授权分享。
+- FH6 单个彩绘纹饰分组最多支持 **3000 层**。
+- 修改存档可能违反游戏或平台条款，并可能造成存档或账号风险。使用者需自行承担后果。
 
-    * ~~**不要**对Inkscape内的图形进行组合。如果为了编辑方便一定要组合，请在导入前全选->解除组合。~~  
-      ~~Do **not** group shapes. If grouping is necessary for editing, ungroup everything before import.~~
+## 环境要求
 
-**提示**：一切不符合规范的操作（或不属于预定符号库的元素）都会在最终导入时被忽略，虽然不一定会引发错误，但会造成视觉效果与游戏内不一致。  
-**Note**: Any unsupported operation or non‑symbol element will be ignored during import, potentially causing mismatches in‑game.
+- Windows 10/11
+- Microsoft Store / Xbox App 版 Forza Horizon 6，并能在本机找到 PGS 存档
+- [Inkscape](https://inkscape.org/) **1.4.4 或更高版本**
 
-**v0.1.0 更新**：支持 Inkscape 的普通分组/组合；导入后也会保留为 FH6 分组。  
-**v0.1.0 update**: Normal Inkscape groups are supported and are preserved as FH6 groups on import.
+如果打不开 Inkscape 官网，可尝试 [CERNET 镜像](https://mirrors.cernet.edu.cn/app/inkscape)。如果你只想导入别人提供的成品 SVG，或者从存档导出 SVG，可以不安装 Inkscape。
 
-### 3. 使用辅助底图进行临摹 / Tracing with Reference Images
+## 快速上手
 
-你可以将真实照片、ACG 图片或 Logo 的 PNG/JPG 文件拖入 Inkscape 作为底层参考图片。一切非符号库元素都会在导入时被忽略，不会写入游戏存档。  
-You may drag PNG/JPG images (photos, comic art, logos) into Inkscape as reference layers. All non‑symbol elements are ignored during import and will not be written to the save file.
+### 1. 下载并备份
 
-### 4. 关于蒙版图形 / About Mask Shapes
+从 [Releases](https://github.com/F3ankk/Inkscape2Forza/releases/latest) 下载最新版 EXE，启动后检查左上角的“当前账户”，然后点击“备份当前账户存档”。备份文件默认命名为 `backup_<XUID>_<timestamp>.zip`，保存位置由你选择。
 
-由于 FH6 的蒙版逻辑十分简单粗暴（使其下方所有图层被遮罩部分变透明，露出车漆），我们在 Inkscape 中采用了一种特殊的图案填充来标记蒙版：  
-Because FH6 uses a very simple mask logic (masked areas reveal the car paint beneath), we use a special pattern fill in Inkscape to mark mask shapes:
+<p align="center">
+  <img src="img/guide/15-backup.png" alt="备份当前账户存档" width="760">
+</p>
 
-1. 选中你要作为蒙版的图形。  
-   Select the shape you want to use as a mask.
+### 2. 安装 FH6 素材库
 
-2. 将其填充修改为预设的 `mask_indicator_dark` 或 `mask_indicator_light` 图案（视你选择的画布背景主题而定）。  
-   Change its fill to the preset `mask_indicator_dark` or `mask_indicator_light` pattern.
-   <p align="center">
-     <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/03.jpg" alt="mask_pattern" width="480">
-   </p>
-3. 导入时，工具会自动将其识别为蒙版。  
-   The importer will automatically recognize it as a mask.
+先安装并至少启动一次 Inkscape，让它生成用户配置目录。随后点击“安装 FH6 符号库到 Inkscape”。完成后重启 Inkscape，或者重新打开“符号”和“填充与描边”面板。
 
-**注：** 蒙版符号支持调整 `不透明度 (Opacity)` 以达到半透明的擦除效果。请勿使用其他未知图案填充符号，以免引发错误。  
-**Note**: Mask symbols support opacity adjustments for semi‑transparent erasing. Do not use other pattern fills.
+<p align="center">
+  <img src="img/guide/01-install-library.png" alt="安装 FH6 符号库" width="760">
+</p>
 
-**v0.1.0 更新**：从 JSON 生成和从 FH6 存档导出的 SVG，如包含蒙版，默认使用 `mask_indicator_dark`。  
-**v0.1.0 update**: SVGs generated from JSON or exported from FH6 use `mask_indicator_dark` by default when they contain masks.
+安装成功后，符号面板中会出现 1400 个 FH6 图形，图案列表中会出现两种蒙版指示图案。
 
-## 存档注入与游戏内刷新 / Save Injection & In‑Game Refresh
+<p align="center">
+  <img src="img/guide/02-symbol-library.png" alt="FH6 符号库" width="760">
+</p>
 
-完成 Inkscape 内的编辑后，请按照以下步骤将涂装注入游戏存档：  
-After finishing your design in Inkscape, follow these steps to inject it into the game save:
+如果符号缩略图没有加载，点击符号面板右下角的齿轮，稍微调整一次“平铺大小”以刷新缓存。
 
-1. ~~**游戏内占位准备**：打开 FH6 彩绘纹饰分组编辑器，新建一个分组，并**放置与你 SVG 文件中有效图层同等数量的默认圆形图层**。~~  
-   ~~**Prepare placeholders**: In FH6’s vinyl group editor, create a new group and add **the same number of default circles** as your SVG’s valid layers.~~
+### 3. 在 Inkscape 中绘制
 
-   **v0.1.0 更新**：打开 FH6 彩绘纹饰分组编辑器并新建或选择任意分组即可（FH6中一个分组最少需要包含2个图形）。待注入分组不再需要与 SVG 有效图层数相同的层数，占位图形也不再要求是白色圆形；任何颜色、任何图形、任何原有层数均可。  
-   **v0.1.0 update**: Create or select any FH6 vinyl group (minimum 2 shapes required). The target group no longer needs the same number of layers as the SVG, and placeholders no longer need to be white circles; any color, shape, and existing layer count are accepted.
-   <p align="center">
-     <img src="https://github.com/F3ankk/Inkscape2Forza/blob/main/img/01.jpg" alt="placeholder_vinylgroup" width="480">
-   </p>
-2. **保存占位符**：给它取一个简单易记的名字，并确保共享选项为**私密**。  
-   **Save the placeholder**: Name it something simple and set sharing to **private**.
+新建文档，建议将画布设为 `1920 × 1080`，与游戏坐标空间保持一致。其他画布尺寸也能转换，但可能出现额外留边或不理想的缩放。
 
-3. ~~**定位存档目录**：运行导入工具，选择你的游戏存档根目录（通常为 `C:\XboxGames\GameSave`）。~~  
-   ~~**Locate save directory**: Run the importer and select your FH6 save root (usually `C:\XboxGames\GameSave`).~~
+从“符号”面板将 FH6 图形拖入画布，然后进行着色、缩放、旋转、倾斜、镜像、复制和排序。Inkscape 的“组合”会保留为游戏中的分组。
 
-   **v0.1.0 更新**：运行导入工具。工具会优先自动使用 `C:\XboxGames\GameSave`；目录不存在或无效时才要求手动选择。  
-   **v0.1.0 update**: Run the importer. It first tries `C:\XboxGames\GameSave` automatically and asks for manual selection only when that directory is missing or invalid.
+<p align="center">
+  <img src="img/guide/04-symbol-panel.png" alt="在 Inkscape 中使用 FH6 符号" width="760">
+</p>
 
-4. **运行注入**：加载 SVG，选择占位用的彩绘纹饰分组进行注入。  
-   **Inject**: Load your SVG and inject it into the placeholder group.  
+建议删除新文档中自动创建的空白“图层 1”，直接在文档根节点绘制；确实需要层级结构时使用普通组合。
 
-5. **游戏内刷新（非常重要）**：注入成功后，回到游戏内，**打开该分组，并重新覆盖保存**以刷新缓存与缩略图。  
-   **Refresh in‑game (critical)**: After injection, open the group in FH6, **save it again** to refresh cache and regenerate the thumbnail.  
+可以将 PNG/JPG 拖入画布并锁定在底层作为临摹参考。位图、文字和其他非 FH6 符号元素不会写入存档。
 
-## 鸣谢 / Acknowledgements
+<p align="center">
+  <img src="img/guide/06-reference-image.png" alt="使用底图临摹" width="760">
+</p>
 
-本项目的灵感与底层资源结构解析，极大地受益于 [forza-painter-fh6](https://github.com/bvzrays/forza-painter-fh6) 项目。  
-This project’s inspiration and resource structure analysis benefited greatly from the [forza-painter-fh6](https://github.com/bvzrays/forza-painter-fh6) project.
+### 4. 在游戏中创建占位分组
 
-此外还要感谢 [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) 和 [vinylizer](https://github.com/Heavenchaos/vinylizer) 项目.
-Special thanks also go to [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu) and [vinylizer](https://github.com/Heavenchaos/vinylizer).
+在 FH6 彩绘纹饰分组编辑器中创建一个分组，放入至少两个任意图形并保存。给它取一个容易辨认的名字，将共享设置保持为“私密”，然后退出分组编辑器。
 
-感谢群友 YukiQWQ8492 的GUI适配工作!  
-Thanks to YukiQWQ8492 for the adaptation work!
+占位分组的图形、颜色和层数不需要与 SVG 相同，导入时内容会被整体替换。
 
-在此向原作者及开源社区表达最诚挚的感谢！  
-Sincere thanks to the original author and the open‑source community.
+<p align="center">
+  <img src="img/guide/08-placeholder-group.png" alt="创建占位彩绘纹饰分组" width="760">
+</p>
 
-## 免责声明 / Disclaimer
+### 5. 将 SVG 导入存档
 
-请仔细阅读以下条款，**使用本工具即代表您同意自行承担所有风险**：  
-Please read the following carefully. **Using this tool means you accept all risks**:
+1. 在左上角确认“当前账户”。
+2. 点击“将 SVG 导入存档”。
+3. 选择刚才保存的 SVG。
+4. 从带缩略图的列表中选择占位分组。
+5. 确认覆盖。
 
-1. **业余项目**：本项目属于业余探索，可能包含未知 Bug，更新随缘。  
-   **Hobby project**: This is a hobby project and may contain unknown bugs; updates are not guaranteed.
+<p align="center">
+  <img src="img/guide/10-select-target.png" alt="选择目标彩绘纹饰分组" width="760">
+</p>
 
-2. **账号风险警告**：修改本地存档违反微软/Xbox/FH6 用户条款，可能导致账号封禁或设备封锁。作者不承担任何后果。  
-   **Account risk warning**: Modifying local save files violates Microsoft/Xbox/FH6 ToS and may result in account suspension or hardware bans. The author assumes no responsibility.
+导入完成后回到游戏，打开该分组并再次覆盖保存。游戏需要这一步刷新缓存和缩略图。
+
+<p align="center">
+  <img src="img/guide/11-import-result.png" alt="导入后的游戏内效果" width="760">
+</p>
+
+## SVG 编辑规则
+
+### 支持
+
+- FH6 符号库中的图形
+- 纯色填充
+- 图层或对象透明度
+- 平移、缩放、旋转、倾斜和镜像
+- 复制、排序和普通组合
+- `mask_indicator_dark` / `mask_indicator_light` 蒙版图案
+
+透明度会按 SVG 的实际显示结果合并：颜色 Alpha、填充透明度、对象透明度和父组合透明度会相乘。最终完全透明的图层不会写入存档。
+
+### 不支持
+
+- 使用路径工具改变符号拓扑
+- FH6 符号库以外的新矢量图形
+- 描边、渐变或任意纹理填充
+- SVG 滤镜、剪切路径等复杂效果
+
+无法识别的元素通常会被忽略，因此 SVG 预览可能与游戏内结果不同。导入前请留意程序显示的“识别元素数”和“有效图层数”。
+
+### 蒙版
+
+选中符号，在“填充与描边”中选择“图案”，再应用 `mask_indicator_dark` 或 `mask_indicator_light`。两种图案的含义相同，只是为了在不同画布背景下更容易观察。
+
+<p align="center">
+  <img src="img/guide/07-mask-fill.png" alt="设置蒙版图案" width="760">
+</p>
+
+不要使用其他图案。蒙版仍可调整对象透明度，以获得半透明擦除效果。
+
+## 从 Geometrize / Vinylizer JSON 生成 SVG
+
+程序可以读取以下项目导出的 JSON：
+
+- [forza-painter-fh6 / Geometrize GPU](https://github.com/zjl88858/forza-painter-geometrize-gpu)
+- [Vinylizer](https://github.com/Heavenchaos/vinylizer)
+
+选择对应的 JSON 转换卡片，载入 JSON 后保存 SVG。生成的 SVG 可以继续在 Inkscape 中编辑，也可以直接导入游戏。
+
+Vinylizer 有时会产生完全透明的无效图层，因此转换时需要设置“不透明度阈值”：
+
+- 图层 Alpha **小于等于阈值**时会被忽略。
+- 阈值为 `0` 时仍会过滤完全透明图层。
+- 不确定时保持 `0`；提高阈值可能损失半透明细节，而且通常节省不了多少图层。
+
+<p align="center">
+  <img src="img/guide/12-vinylizer-threshold.png" alt="Vinylizer 不透明度阈值" width="760">
+</p>
+
+超过 2000 层的 SVG 在 Inkscape 中打开时可能短暂卡顿，请耐心等待。
+
+<p align="center">
+  <img src="img/guide/13-vinylizer-result.png" alt="Vinylizer 转换效果" width="760">
+</p>
+
+## 从存档导出 SVG
+
+点击“从存档导出 SVG”，选择自己的彩绘纹饰分组和保存位置即可。导出的 SVG 会嵌入实际使用的符号和蒙版图案，可以独立打开、继续编辑或分享。
+
+程序只列出 `LayerGroup_0000_*` 自建分组，不会导出从其他作者处下载的 UUID 分组。
+
+<p align="center">
+  <img src="img/guide/14-export-result.png" alt="从存档导出的 SVG" width="760">
+</p>
+
+## 存档写入与云同步
+
+写入时仅修改目标 `C_group` 的图层数据，以及 `header` 中的图层数量。标题、描述、作者等游戏业务元数据保持不变。
+
+在 Windows 文件层面，程序会保持原文件的文件 ID、DACL 权限、创建时间、访问时间、修改时间和文件属性；读取列表或导出时也会避免改变访问时间。文件内容实际发生变化后，NTFS 变更日志和云同步仍可能检测到修改，这是正常且必要的行为。
+
+为降低冲突风险：
+
+1. 写入前备份当前账户。
+2. 确认没有选错 Xbox 账户。
+3. 退出游戏内分组编辑器，最好直接退出游戏。
+4. 写入后重新进入游戏，打开并保存一次目标分组。
+5. 如果 Xbox 应用提示本地和云端存档冲突，请仔细核对时间和内容后再选择。
+
+## 常见问题
+
+### 找不到存档账户
+
+程序默认搜索 `C:\XboxGames\GameSave`。如果该目录不存在或结构无效，会让你手动选择 GameSave 目录。
+
+### 账户栏只有一串数字
+
+程序会尝试从本机 Xbox 登录信息中用 XUID 匹配 Gamertag。没有找到对应资料时显示 XUID，这是正常回退行为，不影响存档操作。
+
+### 符号面板很卡或没有缩略图
+
+1400 个符号首次加载需要时间。若缩略图为空，在符号面板设置中调整一次“平铺大小”。
+
+### 导入成功但游戏缩略图没变
+
+打开目标分组并在游戏内覆盖保存一次，缩略图才会重新生成。
+
+### 游戏内缺少部分图层
+
+检查这些对象是否确实来自 FH6 符号库，是否使用了路径、描边、渐变或未知图案，并查看导入日志中的有效图层数量。
+
+## 致谢
+
+- [forza-painter-fh6](https://github.com/bvzrays/forza-painter-fh6) 及其开发者：原始贴图矢量/顶点数据、素材库生成和图像拟合研究。
+- [forza-painter geometrize GPU Version](https://github.com/zjl88858/forza-painter-geometrize-gpu)：Geometrize 工作流。
+- [Vinylizer](https://github.com/Heavenchaos/vinylizer)：Vinylizer 图像拟合工作流。
+- @Natsu_Yuk1：GUI 适配工作。
+- QQ 群 426913532 的测试成员。
+
+如遇到问题，欢迎提交 [GitHub Issue](https://github.com/F3ankk/Inkscape2Forza/issues)，或在 [Bilibili 图文教程](https://www.bilibili.com/opus/1236139150313259015)下留言。
+
+## English overview
+
+Inkscape2Forza is a Windows GUI tool that converts supported Inkscape SVG documents to Forza Horizon 6 `C_group` vinyl groups and exports user-created groups back to editable SVG.
+
+Quick workflow:
+
+1. Download the latest executable from [Releases](https://github.com/F3ankk/Inkscape2Forza/releases/latest).
+2. Select the correct Xbox save account and create a backup.
+3. Install the bundled FH6 symbol library into Inkscape.
+4. Create a `1920 × 1080` SVG using only the supplied FH6 symbols.
+5. Create a private placeholder vinyl group in FH6 and leave the in-game editor.
+6. Import the SVG into that group, then reopen and save it once in FH6 to refresh its cache and thumbnail.
+
+The tool supports solid colors, opacity, transforms, mirrors, skew, nested groups and mask patterns. Unsupported SVG objects are ignored. It only lists locally created `LayerGroup_0000_*` groups and does not export downloaded UUID groups.
+
+See the Chinese guide above or the [illustrated Bilibili tutorial](https://www.bilibili.com/opus/1236139150313259015) for detailed instructions.
+
+## License
+
+See [LICENSE](LICENSE).

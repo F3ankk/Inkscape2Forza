@@ -6,7 +6,7 @@ import threading
 import xml.etree.ElementTree as ET
 from copy import deepcopy
 
-from .common import get_resource_path
+from .common import SVG_NS, XLINK_NS, get_resource_path
 from .svg_codec import collect_used_def_ids, get_local_name
 
 _symbol_library_cache = None
@@ -106,4 +106,11 @@ def add_referenced_defs(root, defs, symbol_elements):
         if source is None:
             source = pattern_elements.get(definition_id)
         if source is not None:
-            defs.append(deepcopy(source))
+            element = deepcopy(source)
+            for child in element.iter():
+                for name in tuple(child.attrib):
+                    namespace = name[1:].split('}', 1)[0] if name.startswith('{') else ''
+                    if name.startswith('data-') or namespace not in (
+                            '', SVG_NS, XLINK_NS, 'http://www.w3.org/XML/1998/namespace'):
+                        del child.attrib[name]
+            defs.append(element)
