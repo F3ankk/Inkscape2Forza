@@ -1,4 +1,4 @@
-from . import gamesave, library, ui, workflows
+from . import gamesave, ui, workflows
 
 
 ACTIONS = (
@@ -12,5 +12,4 @@ ACTIONS = (
 
 
 def main():
-    library.preload_symbol_library()
     ui.run(ui.App(ACTIONS, gamesave.refresh_accounts, gamesave.select_account))

@@ -86,7 +86,7 @@ def build_layer_bytes(shape_word, rot, tx, ty, sx, sy, skew, r, g, b, a, is_mask
 # Encoding
 
 def encode_shape_node(shape, offset_x=0.0, offset_y=0.0, mark_previous_mask=False,
-                      inherited_mask=False, bare=False):
+                      bare=False):
     if bare:
         return struct.pack(
             '<BHffffffBBBB',
@@ -95,7 +95,7 @@ def encode_shape_node(shape, offset_x=0.0, offset_y=0.0, mark_previous_mask=Fals
         )
     return build_layer_bytes(
         shape.shape_word, shape.rot, shape.tx - offset_x, shape.ty - offset_y, shape.sx, shape.sy,
-        shape.skew, shape.r, shape.g, shape.b, shape.a, mark_previous_mask or inherited_mask
+        shape.skew, shape.r, shape.g, shape.b, shape.a, mark_previous_mask
     )
 
 
@@ -166,26 +166,62 @@ def validate_model_tree(root_group):
 
 
 def node_metrics(node, shape_half_extents=None):
+    metrics = _build_group_metrics(node, shape_half_extents)
+    _, origin, all_masked, _ = metrics[id(node)]
+    return origin, all_masked
+
+
+def _shape_bounds(shape, shape_half_extents):
     min_x = min_y = float("inf")
     max_x = max_y = float("-inf")
-    all_masked = True
-    for shape in iter_shapes(node):
-        all_masked = all_masked and shape.is_mask
-        half_x, half_y = (shape_half_extents or {}).get(shape.shape_word, (64.0, 64.0))
-        if not all(math.isfinite(value) and value > 0 for value in (half_x, half_y)):
-            half_x = half_y = 64.0
-        a, b, c, d = shape_matrix(shape)
-        for x, y in ((-half_x, -half_y), (half_x, -half_y),
-                     (half_x, half_y), (-half_x, half_y)):
-            px = shape.tx + a * x + c * y
-            py = shape.ty + b * x + d * y
-            min_x = min(min_x, px)
-            max_x = max(max_x, px)
-            min_y = min(min_y, py)
-            max_y = max(max_y, py)
-    if min_x == float("inf"):
-        return (0.0, 0.0), False
-    return ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0), all_masked
+    half_x, half_y = (shape_half_extents or {}).get(shape.shape_word, (64.0, 64.0))
+    if not all(math.isfinite(value) and value > 0 for value in (half_x, half_y)):
+        half_x = half_y = 64.0
+    a, b, c, d = shape_matrix(shape)
+    for x, y in ((-half_x, -half_y), (half_x, -half_y),
+                 (half_x, half_y), (-half_x, half_y)):
+        px = shape.tx + a * x + c * y
+        py = shape.ty + b * x + d * y
+        min_x = min(min_x, px)
+        max_x = max(max_x, px)
+        min_y = min(min_y, py)
+        max_y = max(max_y, py)
+    return min_x, min_y, max_x, max_y
+
+
+def _build_group_metrics(root, shape_half_extents=None):
+    """Compute each shape's bounds once and fold group metrics postorder."""
+    metrics = {}
+    stack = [(root, False)]
+    while stack:
+        node, ready = stack.pop()
+        if isinstance(node, ShapeNode):
+            bounds = _shape_bounds(node, shape_half_extents)
+            metrics[id(node)] = (bounds, (0.0, 0.0), node.is_mask, 0)
+        elif not ready:
+            stack.append((node, True))
+            stack.extend((child, False) for child in reversed(node.children))
+        else:
+            min_x = min_y = float('inf')
+            max_x = max_y = float('-inf')
+            all_masked = True
+            for child in node.children:
+                child_bounds, _, child_masked, _ = metrics[id(child)]
+                if child_bounds[0] == float('inf'):
+                    continue
+                min_x = min(min_x, child_bounds[0])
+                min_y = min(min_y, child_bounds[1])
+                max_x = max(max_x, child_bounds[2])
+                max_y = max(max_y, child_bounds[3])
+                all_masked = all_masked and child_masked
+            if min_x == float('inf'):
+                origin, all_masked = (0.0, 0.0), False
+            else:
+                origin = ((min_x + max_x) / 2.0, (min_y + max_y) / 2.0)
+            depth = (1 + metrics[id(node.children[-1])][3]
+                     if node.children and isinstance(node.children[-1], GroupNode) else 1)
+            metrics[id(node)] = ((min_x, min_y, max_x, max_y), origin, all_masked, depth)
+    return metrics
 
 
 def normalize_groups(node):
@@ -208,12 +244,6 @@ def normalize_groups(node):
     node.children = normalized
 
 
-def terminal_depth(node):
-    if not isinstance(node, GroupNode) or not node.children or not isinstance(node.children[-1], GroupNode):
-        return 1
-    return 1 + terminal_depth(node.children[-1])
-
-
 def sibling_group_transform_marker(previous_group_depth):
     return b'\x00' + (b'\x01' * max(1, previous_group_depth)) + b'\x03'
 
@@ -222,19 +252,17 @@ def pack_translation_transform(x, y, marker):
     return marker + struct.pack('<ffff', x, y, 1.0, 0.0)
 
 
-def encode_group_node(group, parent_offset=(0.0, 0.0), transform_marker=b'\x03',
-                      inherited_mask=False, shape_half_extents=None):
+def encode_group_node(group, metrics, parent_offset=(0.0, 0.0), transform_marker=b'\x03'):
     children = group.children
     bitmap = child_bitmap(children)
-    origin, all_masked = node_metrics(group, shape_half_extents)
+    _, origin, all_masked, _ = metrics[id(group)]
     is_mask_group = group.is_mask_group or all_masked
     marker = GROUP_MARKER_MASK if is_mask_group else GROUP_MARKER_NORMAL
-    group.tx, group.ty = origin
     out = bytearray(pack_translation_transform(origin[0] - parent_offset[0], origin[1] - parent_offset[1], transform_marker))
     out.extend(struct.pack('<BHHH', marker, len(children), len(bitmap), 0))
     out.extend(bitmap)
     child_bytes, final_mask = encode_children(
-        children, origin, inherited_mask or is_mask_group, shape_half_extents
+        children, metrics, origin
     )
     out.extend(child_bytes)
     return bytes(out), final_mask
@@ -249,8 +277,7 @@ def child_bitmap(children):
     return bytes(bitmap)
 
 
-def encode_children(children, parent_offset=(0.0, 0.0), inherited_mask=False,
-                    shape_half_extents=None):
+def encode_children(children, metrics, parent_offset=(0.0, 0.0)):
     out = bytearray()
     previous_was_mask = False
     previous_was_group = False
@@ -269,18 +296,18 @@ def encode_children(children, parent_offset=(0.0, 0.0), inherited_mask=False,
             if mark_previous and transform_marker and transform_marker[0] == 0x00:
                 transform_marker = b'\x01' + transform_marker[1:]
             group_bytes, group_final_mask = encode_group_node(
-                child, parent_offset, transform_marker, inherited_mask, shape_half_extents
+                child, metrics, parent_offset, transform_marker
             )
             out.extend(group_bytes)
             previous_was_mask = group_final_mask
             previous_was_group = True
-            previous_group_depth = terminal_depth(child)
+            previous_group_depth = metrics[id(child)][3]
         else:
             if previous_was_group:
                 out.append(0x00)
                 out.extend(b'\x01' * max(0, previous_group_depth - 1))
             lead_mask = previous_was_group or mark_previous
-            out.extend(encode_shape_node(child, parent_offset[0], parent_offset[1], lead_mask, False, not previous_sibling_seen))
+            out.extend(encode_shape_node(child, parent_offset[0], parent_offset[1], lead_mask, not previous_sibling_seen))
             previous_was_mask = child.is_mask
             previous_was_group = False
             previous_group_depth = 0
@@ -291,22 +318,23 @@ def encode_children(children, parent_offset=(0.0, 0.0), inherited_mask=False,
 def build_cgroup_payload(root_group, shape_half_extents=None):
     validate_model_tree(root_group)
     normalize_groups(root_group)
-    validate_model_tree(root_group)
     children = root_group.children
     bitmap = child_bitmap(children)
-    root_origin, _ = node_metrics(root_group, shape_half_extents)
+    metrics = _build_group_metrics(root_group, shape_half_extents)
+    root_origin = metrics[id(root_group)][1]
     payload = bytearray()
     payload.extend(b'gyvl')
     payload.extend(struct.pack('<II', 1, 0))
     payload.extend(struct.pack('<Bffff', 0x03, 0.0, 0.0, 1.0, 0.0))
-    payload.extend(struct.pack('<BHH2s', GROUP_MARKER_NORMAL, len(children), len(bitmap), b'\x00\x00'))
+    root_marker = GROUP_MARKER_MASK if root_group.is_mask_group else GROUP_MARKER_NORMAL
+    payload.extend(struct.pack('<BHH2s', root_marker, len(children), len(bitmap), b'\x00\x00'))
     payload.extend(bitmap)
     child_bytes, final_mask = encode_children(
-        children, root_origin, root_group.is_mask_group, shape_half_extents
+        children, metrics, root_origin
     )
     payload.extend(child_bytes)
     payload.extend(b'\x01' if final_mask else b'\x00')
-    terminal = terminal_depth(children[-1]) if isinstance(children[-1], GroupNode) else 0
+    terminal = metrics[id(children[-1])][3] if isinstance(children[-1], GroupNode) else 0
     payload.extend(b'\x01' * (terminal + 1))
     return bytes(payload)
 
@@ -591,6 +619,8 @@ def _recover_pending_locked(target_cgroup, base):
 
 def recover_pending_cgroup(target_cgroup):
     """Restore both original files from any interrupted transaction."""
+    if not _recovery_base(target_cgroup).is_dir():
+        return
     with _save_lock(target_cgroup) as base:
         _recover_pending_locked(target_cgroup, base)
 
@@ -602,13 +632,21 @@ def _assert_encoded_model(expected, actual):
         return tuple(structure(child) for child in node.children)
     if structure(expected) != structure(actual):
         raise ValueError('Generated C_group nesting/order mismatch')
-    left, right = list(iter_shapes(expected)), list(iter_shapes(actual))
+    def effective_shapes(group, inherited_mask=False):
+        masked = inherited_mask or group.is_mask_group
+        for child in group.children:
+            if isinstance(child, GroupNode):
+                yield from effective_shapes(child, masked)
+            else:
+                yield child, masked or child.is_mask
+
+    left, right = list(effective_shapes(expected)), list(effective_shapes(actual))
     if len(left) != len(right):
         raise ValueError('Generated C_group layer count mismatch')
-    delta = ((right[0].tx - left[0].tx), (right[0].ty - left[0].ty))
-    for index, (before, after) in enumerate(zip(left, right), 1):
-        if (before.shape_word, before.r, before.g, before.b, before.a, before.is_mask) != (
-                after.shape_word, after.r, after.g, after.b, after.a, after.is_mask):
+    delta = ((right[0][0].tx - left[0][0].tx), (right[0][0].ty - left[0][0].ty))
+    for index, ((before, before_mask), (after, after_mask)) in enumerate(zip(left, right), 1):
+        if (before.shape_word, before.r, before.g, before.b, before.a, before_mask) != (
+                after.shape_word, after.r, after.g, after.b, after.a, after_mask):
             raise ValueError(f'Generated C_group layer {index} identity/color/mask mismatch')
         actual_values = (*shape_matrix(after), after.tx - delta[0], after.ty - delta[1])
         expected_values = (*shape_matrix(before), before.tx, before.ty)

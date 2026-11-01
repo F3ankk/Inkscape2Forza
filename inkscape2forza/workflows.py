@@ -1,6 +1,7 @@
 """GUI workflows."""
 import json
 import math
+from collections import Counter
 import os
 import re
 import shutil
@@ -164,10 +165,7 @@ def vinylizer_bounds_center(shapes, supported_types, opacity_threshold):
 
 
 def has_supported_json_shape(shapes, supported_types):
-    return any(
-        shape.get("type") in supported_types and len(shape.get("data", [])) >= 4
-        for shape in shapes
-    )
+    return any(shape.get("type") in supported_types for shape in shapes)
 
 
 # Symbol installation
@@ -234,9 +232,6 @@ def workflow_geometrize_to_svg():
 
         shapes = json_shape_array(geo_data)
 
-        if not shapes:
-            ui.log(tr("错误：JSON 文件中没有找到有效的形状数据。", "Error: No valid shapes found in JSON."))
-            return
         shapes, skipped = prepare_json_shapes(shapes, {1, 16})
         if skipped:
             ui.log(tr(f"已跳过 {skipped} 个数值无效的图形",
@@ -259,7 +254,7 @@ def workflow_geometrize_to_svg():
     for idx, shape in enumerate(shapes):
         type_code = shape.get("type")
         data = shape.get("data", [])
-        if type_code not in (1, 16) or len(data) < 4:
+        if type_code not in (1, 16):
             continue
         if idx == boundary_index:
             continue
@@ -282,16 +277,13 @@ def workflow_geometrize_to_svg():
         return
 
     try:
-        symbol_dict, _, symbol_elements = library.load_symbol_library()
-        tree, root, defs, target_container = svg_codec.create_inkscape_document()
+        symbol_dict, href_by_word, symbol_elements = library.load_symbol_library()
+        tree, root, defs = svg_codec.create_inkscape_document()
+        target_container = root
         canvas_w, canvas_h = 1920.0, 1080.0
 
-        rect_href, circle_href = None, None
-        for k in symbol_dict.keys():
-            if k.endswith('_w101'):
-                rect_href = k
-            elif k.endswith('_w102'):
-                circle_href = k
+        rect_href = href_by_word.get(101)
+        circle_href = href_by_word.get(102)
 
         if not rect_href or not circle_href:
             ui.log(tr("错误：模板库中找不到基础矩形（w101）或圆形（w102）的符号引用。",
@@ -315,20 +307,20 @@ def workflow_geometrize_to_svg():
             data = shape.get("data", [])
             if idx == boundary_index or json_shape_is_transparent(shape):
                 continue
-            if len(data) < 4 or type_code not in (1, 16):
+            if type_code not in (1, 16):
                 continue
 
             has_visible_shapes = True
             if type_code == 1:
-                geo_cx = float(data[0]) + float(data[2]) / 2.0
-                geo_cy = float(data[1]) + float(data[3]) / 2.0
-                hw = float(data[2]) / 2.0
-                hh = float(data[3]) / 2.0
+                geo_cx = data[0] + data[2] / 2.0
+                geo_cy = data[1] + data[3] / 2.0
+                hw = data[2] / 2.0
+                hh = data[3] / 2.0
             else:
-                geo_cx = float(data[0])
-                geo_cy = float(data[1])
-                hw = float(data[2])
-                hh = float(data[3])
+                geo_cx = data[0]
+                geo_cy = data[1]
+                hw = data[2]
+                hh = data[3]
 
             radius = math.hypot(hw, hh)
             min_ext_x = min(min_ext_x, geo_cx - radius)
@@ -348,47 +340,42 @@ def workflow_geometrize_to_svg():
 
         valid_count = 0
         deferred_masks = []
+        unsupported_counts = Counter()
 
         for idx, shape in enumerate(shapes):
             type_code = shape.get("type")
 
             if type_code not in (1, 16):
-                ui.log(tr(f"跳过不支持的元素（索引 {idx}）：类型 {type_code}",
-                          f"Skipped unsupported element (index {idx}): type {type_code}"))
+                unsupported_counts[str(type_code)] += 1
                 continue
 
             data = shape.get("data", [])
-            if len(data) < 4:
-                continue
-
             if json_shape_is_transparent(shape) and idx != boundary_index:
                 continue
 
-            color = list(shape.get("color", [255, 255, 255, 255]))
-            color.extend([255] * (4 - len(color)))
-            r, g, b, a = [max(0, min(255, int(v))) for v in color]
+            r, g, b, a = shape['color']
 
             if type_code == 1:
-                geo_cx = float(data[0]) + float(data[2]) / 2.0
-                geo_cy = float(data[1]) + float(data[3]) / 2.0
-                sx = float(data[2]) / 127.0
-                sy = float(data[3]) / 127.0
-                rot_deg = float(data[4]) if len(data) >= 5 else 0.0
+                geo_cx = data[0] + data[2] / 2.0
+                geo_cy = data[1] + data[3] / 2.0
+                sx = data[2] / 127.0
+                sy = data[3] / 127.0
+                rot_deg = data[4] if len(data) >= 5 else 0.0
                 href = rect_href
             else:  # type == 16
-                geo_cx = float(data[0])
-                geo_cy = float(data[1])
-                sx = float(data[2]) / 63.0
-                sy = float(data[3]) / 63.0
-                rot_deg = (360.0 - float(data[4])) % 360.0 if len(data) >= 5 else 0.0
+                geo_cx = data[0]
+                geo_cy = data[1]
+                sx = data[2] / 63.0
+                sy = data[3] / 63.0
+                rot_deg = (360.0 - data[4]) % 360.0 if len(data) >= 5 else 0.0
                 href = circle_href
 
             svg_cx = geo_cx + (canvas_w / 2.0 - geo_w / 2.0)
             svg_cy = geo_cy + (canvas_h / 2.0 - geo_h / 2.0)
 
             if idx == boundary_index:
-                hw = float(data[2]) / 2.0
-                hh = float(data[3]) / 2.0
+                hw = data[2] / 2.0
+                hh = data[3] / 2.0
 
                 svg_min_ext_x = min_ext_x + (canvas_w / 2.0 - geo_w / 2.0)
                 svg_max_ext_x = max_ext_x + (canvas_w / 2.0 - geo_w / 2.0)
@@ -417,8 +404,13 @@ def workflow_geometrize_to_svg():
         for mask_args in deferred_masks:
             append_shape(*mask_args)
 
+        if unsupported_counts:
+            summary = ', '.join(f'{type_code}: {count}'
+                                for type_code, count in sorted(unsupported_counts.items()))
+            ui.log(tr(f'已跳过不支持的 Geometrize 类型：{summary}',
+                      f'Skipped unsupported Geometrize types: {summary}'))
+
         library.add_referenced_defs(root, defs, symbol_elements)
-        svg_codec.prune_unused_defs(root)
         svg_codec.write_inkscape_svg(tree, save_path)
         ui.log(tr(f"成功写入 {valid_count} 个图形", f"Wrote {valid_count} shapes"))
         ui.log(tr(f"文件已保存至：{os.path.normpath(save_path)}", f"Saved: {os.path.normpath(save_path)}"))
@@ -443,9 +435,6 @@ def workflow_vinylizer_to_svg():
 
         shapes = json_shape_array(vin_data)
 
-        if not shapes:
-            ui.log(tr("错误：JSON 文件中没有找到有效的形状数据。", "Error: No valid shapes found in JSON."))
-            return
         shapes, skipped = prepare_json_shapes(shapes, {1, 16, 103, 228})
         if skipped:
             ui.log(tr(f"已跳过 {skipped} 个数值无效的图形",
@@ -469,17 +458,12 @@ def workflow_vinylizer_to_svg():
         return
 
     supported_types = {1, 16, 103, 228}
-    raw_layer_count = sum(
-        1 for shape in shapes
-        if shape.get("type") in supported_types
-        and len(shape.get("data", [])) >= 4
-    )
-    layer_count = sum(
-        1 for shape in shapes
-        if shape.get("type") in supported_types
-        and len(shape.get("data", [])) >= 4
-        and not json_shape_is_at_or_below_opacity(shape, opacity_threshold)
-    )
+    raw_layer_count = layer_count = 0
+    for shape in shapes:
+        if shape.get("type") in supported_types:
+            raw_layer_count += 1
+            if not json_shape_is_at_or_below_opacity(shape, opacity_threshold):
+                layer_count += 1
     ui.log(tr(f"原始图层数：{raw_layer_count}", f"Original layers: {raw_layer_count}"))
     ui.log(tr(f"过滤后图层数：{layer_count}", f"Layers after filtering: {layer_count}"))
     default_name = f"{os.path.splitext(os.path.basename(json_path))[0]}.{layer_count}.svg"
@@ -495,8 +479,9 @@ def workflow_vinylizer_to_svg():
         return
 
     try:
-        symbol_dict, _, symbol_elements = library.load_symbol_library()
-        tree, root, defs, target_container = svg_codec.create_inkscape_document()
+        symbol_dict, href_by_word, symbol_elements = library.load_symbol_library()
+        tree, root, defs = svg_codec.create_inkscape_document()
+        target_container = root
         canvas_w, canvas_h = 1920.0, 1080.0
 
         # type: (FH6 shape, X divisor, Y divisor)
@@ -506,12 +491,11 @@ def workflow_vinylizer_to_svg():
             103: (103, 63.0, 109.265625),
             228: (228, 63.0, 63.0),
         }
-        href_by_type = {}
-        for type_code, (shape_word, _, _) in shape_specs.items():
-            suffix = f'_w{shape_word}'
-            href = next((key for key in symbol_dict if key.endswith(suffix)), None)
-            if href:
-                href_by_type[type_code] = href
+        href_by_type = {
+            type_code: href_by_word[shape_word]
+            for type_code, (shape_word, _, _) in shape_specs.items()
+            if shape_word in href_by_word
+        }
 
         missing_types = [type_code for type_code in shape_specs if type_code not in href_by_type]
         if missing_types:
@@ -528,32 +512,27 @@ def workflow_vinylizer_to_svg():
         offset_y = (canvas_h / 2.0) - geo_cy_center
 
         valid_count = 0
+        unsupported_counts = Counter()
         for idx, shape in enumerate(shapes):
             type_code = shape.get("type")
 
             if type_code not in shape_specs:
-                ui.log(tr(f"跳过不支持的元素（索引 {idx}）：类型 {type_code}",
-                          f"Skipped unsupported shape (index {idx}): type {type_code}"))
+                unsupported_counts[str(type_code)] += 1
                 continue
 
             data = shape.get("data", [])
-            if len(data) < 4:
-                continue
-
             if json_shape_is_at_or_below_opacity(shape, opacity_threshold):
                 continue
 
-            color = list(shape.get("color", [255, 255, 255, 255]))
-            color.extend([255] * (4 - len(color)))
-            r, g, b, a = [max(0, min(255, int(v))) for v in color]
+            r, g, b, a = shape['color']
 
             # Older rectangles may omit angle.
-            geo_cx = float(data[0])
-            geo_cy = float(data[1])
+            geo_cx = data[0]
+            geo_cy = data[1]
             _, divisor_x, divisor_y = shape_specs[type_code]
-            sx = float(data[2]) / divisor_x
-            sy = float(data[3]) / divisor_y
-            rot_deg = (360.0 - float(data[4])) % 360.0 if len(data) >= 5 else 0.0
+            sx = data[2] / divisor_x
+            sy = data[3] / divisor_y
+            rot_deg = (360.0 - data[4]) % 360.0 if len(data) >= 5 else 0.0
             href = href_by_type[type_code]
 
             svg_cx = geo_cx + offset_x
@@ -565,8 +544,13 @@ def workflow_vinylizer_to_svg():
             append_shape(svg_cx, svg_cy, sx, sy, rot_deg, fill_hex, opacity, href, f"vin_shape_{idx}")
             valid_count += 1
 
+        if unsupported_counts:
+            summary = ', '.join(f'{type_code}: {count}'
+                                for type_code, count in sorted(unsupported_counts.items()))
+            ui.log(tr(f'已跳过不支持的 Vinylizer 类型：{summary}',
+                      f'Skipped unsupported Vinylizer types: {summary}'))
+
         library.add_referenced_defs(root, defs, symbol_elements)
-        svg_codec.prune_unused_defs(root)
         svg_codec.write_inkscape_svg(tree, save_path)
         ui.log(tr(f"成功写入 {valid_count} 个图形", f"Wrote {valid_count} shapes"))
         ui.log(tr(f"文件已保存至：{os.path.normpath(save_path)}", f"Saved: {os.path.normpath(save_path)}"))

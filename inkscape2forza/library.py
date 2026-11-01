@@ -49,40 +49,20 @@ def load_symbol_library():
 
 
 def load_shape_half_extents():
+    """Read shape dimensions without parsing the 49 MB symbol definitions."""
     global _shape_half_extents_cache
     if _shape_half_extents_cache is not None:
         return _shape_half_extents_cache
-    _, href_by_word, elements_by_id = load_symbol_library()
+    from ._symbol_index import SYMBOL_INDEX
+
     extents = {}
-    for shape_word, href in href_by_word.items():
-        element = elements_by_id.get(href.removeprefix('#'))
-        view_box = element.get('viewBox', '').split() if element is not None else ()
-        if len(view_box) != 4:
-            continue
-        try:
-            width, height = abs(float(view_box[2])), abs(float(view_box[3]))
-        except ValueError:
-            continue
+    for shape_word, _, _, _, width, height in SYMBOL_INDEX:
+        width, height = abs(width), abs(height)
         side = max(width, height)
         if math.isfinite(width) and math.isfinite(height) and side > 0:
             extents[shape_word] = (64.0 * width / side, 64.0 * height / side)
     _shape_half_extents_cache = extents
     return _shape_half_extents_cache
-
-
-def preload_symbol_library():
-    """Warm the symbol cache in the background."""
-    thread = threading.Thread(target=_preload_symbol_library, name="symbol-library-cache", daemon=True)
-    thread.start()
-    return thread
-
-
-def _preload_symbol_library():
-    try:
-        load_symbol_library()
-    except Exception:
-        # Foreground loading reports resource errors.
-        pass
 
 
 def load_pattern_library():

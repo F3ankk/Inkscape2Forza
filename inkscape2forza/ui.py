@@ -54,6 +54,8 @@ class ChoiceDialog(tk.Toplevel):
         self.resizable(True, True)
         self.geometry("620x580" if image_paths else "620x390")
         self._images = []
+        self._thumbnail_paths = list((image_paths or [])[:len(options)])
+        self._next_thumbnail = 0
 
         tk.Label(self, text=prompt, justify=tk.LEFT, wraplength=480,
                  bg=BG, fg=TEXT, font=FONT).pack(padx=14, pady=(12, 6), anchor="w")
@@ -73,8 +75,7 @@ class ChoiceDialog(tk.Toplevel):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         for index, option in enumerate(options):
-            image = self._load_thumbnail(image_paths[index]) if image_paths and index < len(image_paths) else None
-            self.listbox.insert("", tk.END, iid=str(index), text=f"  {option}", image=image or "")
+            self.listbox.insert("", tk.END, iid=str(index), text=f"  {option}")
         if options:
             self.listbox.selection_set("0")
             self.listbox.focus("0")
@@ -91,8 +92,23 @@ class ChoiceDialog(tk.Toplevel):
                   activeforeground=TEXT, relief=tk.FLAT, cursor="hand2").pack(side=tk.LEFT, padx=8)
 
         self._center_on(parent)
+        if self._thumbnail_paths and Image is not None:
+            self.after_idle(self._load_thumbnail_batch)
         self.grab_set()
         self.wait_window()
+
+    def _load_thumbnail_batch(self):
+        """Populate images after the picker is visible, a few rows at a time."""
+        if not self.winfo_exists():
+            return
+        end = min(self._next_thumbnail + 6, len(self._thumbnail_paths))
+        for index in range(self._next_thumbnail, end):
+            photo = self._load_thumbnail(self._thumbnail_paths[index])
+            if photo is not None and self.listbox.exists(str(index)):
+                self.listbox.item(str(index), image=photo)
+        self._next_thumbnail = end
+        if end < len(self._thumbnail_paths):
+            self.after(10, self._load_thumbnail_batch)
 
     def _load_thumbnail(self, path):
         if Image is None or not path or not os.path.isfile(path):

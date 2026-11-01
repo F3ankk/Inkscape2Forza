@@ -106,7 +106,6 @@ def choose_containers_root():
     if not os.path.exists(containers_root):
         ui.log(tr("未找到数据根目录", "No root directory found"))
         return None, None, None
-    ui.refresh_accounts()
     return _cached_gamesave_dir, u_dir, containers_root
 
 
@@ -127,13 +126,10 @@ def get_target_layer_groups(containers_root):
         if os.path.exists(c_group_path) and os.path.exists(header_path):
             try:
                 cgroup_codec.recover_pending_cgroup(c_group_path)
-                checked_data = cgroup_codec.read_file_read_only(c_group_path)
-                cgroup_codec.decode_cgroup_payload(
-                    cgroup_codec.validate_cgroup_data(checked_data))
+                title, author = cgroup_codec.parse_header(header_path)
             except Exception as error:
                 ui.log(f"Save group unavailable: {folder}: {error}")
                 continue
-            title, author = cgroup_codec.parse_header(header_path)
             valid_groups.append({
                 "path": c_group_path,
                 "thumbnail": os.path.join(folder, "thumb.webp"),

@@ -1,4 +1,6 @@
 """SVG parsing and generation."""
+import bisect
+import heapq
 import math
 import os
 import re
@@ -170,6 +172,10 @@ def parse_float_attr(elem, name, default=0.0):
     raw = elem.get(name)
     if raw is None:
         return default
+    return parse_svg_coordinate(raw, name)
+
+
+def parse_svg_coordinate(raw, name):
     match = re.fullmatch(r'\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(px|in|cm|mm|pt|pc|q)?\s*', raw, re.I)
     if not match:
         if raw.strip().lower() in ('nan', '+nan', '-nan', 'inf', '+inf', '-inf',
@@ -259,8 +265,7 @@ def parse_transform(transform_str):
 def parse_svg_length(value, default):
     if value is None:
         return default
-    elem = ET.Element('length', {'value': value})
-    parsed = parse_float_attr(elem, 'value')
+    parsed = parse_svg_coordinate(value, 'canvas')
     if parsed <= 0:
         raise ValueError('SVG canvas length must be positive')
     return parsed
@@ -412,15 +417,46 @@ def is_known_fh6_shape_word(word):
     return (1 <= family <= 9 or 13 <= family <= 38) and index < 40
 
 
+def boxes_do_not_overlap(boxes):
+    """Check the same conservative AABBs with an X-axis sweep."""
+    if any(x0 >= x1 or y0 >= y1 for x0, y0, x1, y1 in boxes):
+        # Degenerate boxes have unusual overlap semantics in the original
+        # conservative test. Keep them exact; valid shapes use the sweep.
+        return all(
+            left[2] <= right[0] or right[2] <= left[0]
+            or left[3] <= right[1] or right[3] <= left[1]
+            for index, left in enumerate(boxes) for right in boxes[:index]
+        )
+    active_by_y = []
+    expiry = []
+    for index, (x0, y0, x1, y1) in sorted(enumerate(boxes), key=lambda item: item[1][0]):
+        while expiry and expiry[0][0] <= x0:
+            _, old_index, old_y0 = heapq.heappop(expiry)
+            position = bisect.bisect_left(active_by_y, (old_y0, old_index))
+            active_by_y.pop(position)
+        position = bisect.bisect_left(active_by_y, (y0, index))
+        if position and active_by_y[position - 1][2] > y0:
+            return False
+        if position < len(active_by_y) and y1 > active_by_y[position][0]:
+            return False
+        active_by_y.insert(position, (y0, index, y1))
+        heapq.heappush(expiry, (x1, index, y0))
+    return True
+
+
 def process_svg(svg_path):
     """Return the model root and FH6 node count."""
     tree = ET.parse(svg_path)
     root = tree.getroot()
     if get_local_name(root) != 'svg':
         raise ValueError('SVG root element is required')
-    ids = [elem.get('id') for elem in root.iter() if elem.get('id')]
-    if len(ids) != len(set(ids)):
-        raise ValueError('SVG contains duplicate element IDs')
+    ids = set()
+    for element in root.iter():
+        element_id = element.get('id')
+        if element_id:
+            if element_id in ids:
+                raise ValueError('SVG contains duplicate element IDs')
+            ids.add(element_id)
     if root.get('transform'):
         raise ValueError('Root SVG transform is not supported')
     aspect = root.get('preserveAspectRatio', 'xMidYMid meet').strip()
@@ -463,31 +499,22 @@ def process_svg(svg_path):
             radius_y = abs(b) * half_x + abs(d) * half_y
             box = (shape.tx - radius_x, shape.ty - radius_y,
                    shape.tx + radius_x, shape.ty + radius_y)
-            if any(not (box[2] <= other[0] or other[2] <= box[0]
-                        or box[3] <= other[1] or other[3] <= box[1])
-                   for other in boxes):
-                return False
             boxes.append(box)
-        return True
+        return boxes_do_not_overlap(boxes)
     stylesheet_rules = collect_stylesheet_rules(root)
-    style_cache = {}
 
     def properties_for(element):
-        key = id(element)
-        properties = style_cache.get(key)
-        if properties is None:
-            properties = computed_style(element, stylesheet_rules)
-            unsupported = ('transform', 'transform-origin', 'transform-box', 'filter',
-                           'clip-path', 'mask', 'mix-blend-mode', 'isolation')
-            for name in unsupported:
-                value = (properties.get(name) if name == 'transform'
-                         else style_value(element, name, properties))
-                if value and str(value).strip().lower() not in ('none', 'normal', 'initial'):
-                    raise ValueError(f"Unsupported SVG {name} on {element.get('id') or get_local_name(element)}")
-            stroke = style_value(element, 'stroke', properties)
-            if stroke and str(stroke).strip().lower() not in ('none', 'initial'):
-                raise ValueError(f"Unsupported SVG stroke on {element.get('id') or get_local_name(element)}")
-            style_cache[key] = properties
+        properties = computed_style(element, stylesheet_rules)
+        unsupported = ('transform', 'transform-origin', 'transform-box', 'filter',
+                       'clip-path', 'mask', 'mix-blend-mode', 'isolation')
+        for name in unsupported:
+            value = (properties.get(name) if name == 'transform'
+                     else style_value(element, name, properties))
+            if value and str(value).strip().lower() not in ('none', 'normal', 'initial'):
+                raise ValueError(f"Unsupported SVG {name} on {element.get('id') or get_local_name(element)}")
+        stroke = style_value(element, 'stroke', properties)
+        if stroke and str(stroke).strip().lower() not in ('none', 'initial'):
+            raise ValueError(f"Unsupported SVG stroke on {element.get('id') or get_local_name(element)}")
         return properties
 
     total_fh6_nodes = 0
@@ -499,7 +526,7 @@ def process_svg(svg_path):
         nonlocal total_fh6_nodes
         group = GroupNode(name=parent.get('id', ''))
 
-        for elem in list(parent):
+        for elem in parent:
             local = get_local_name(elem)
             if local in ('defs', 'symbol', 'pattern', 'metadata', 'namedview', 'style', 'title', 'desc'):
                 continue
@@ -672,7 +699,7 @@ def create_inkscape_document():
     })
     defs = ET.SubElement(root, f'{{{SVG_NS}}}defs', {'id': 'defs1402'})
     # Avoid an extra FH6 subgroup.
-    return ET.ElementTree(root), root, defs, root
+    return ET.ElementTree(root), root, defs
 
 
 def append_shape_use(parent, href, symbol_dict, svg_cx, svg_cy, sx, sy, rot_deg,
@@ -804,7 +831,8 @@ def export_group_to_svg(root_group, svg_path):
         formatted = ', '.join(f'0x{word:04x}' for word in missing_words)
         raise ValueError(f"C_group uses unsupported shape IDs: {formatted}")
 
-    tree, root, defs, target_container = create_inkscape_document()
+    tree, root, defs = create_inkscape_document()
+    target_container = root
     canvas_w, canvas_h = 1920.0, 1080.0
     for idx, child in enumerate(root_group.children):
         child_prefix = f"forza_{idx+1}"
@@ -820,7 +848,6 @@ def export_group_to_svg(root_group, svg_path):
                 f"shape_{child_prefix}", root_group.is_mask_group
             )
     add_referenced_defs(root, defs, symbol_elements)
-    prune_unused_defs(root)
     write_inkscape_svg(tree, svg_path)
 
 
