@@ -2,13 +2,14 @@
 import math
 import os
 import re
+import struct
 import tempfile
 import xml.etree.ElementTree as ET
 
 from PIL import ImageColor
 
 from .common import SVG_NS, XLINK_NS
-from .model import GroupNode, ShapeNode
+from .model import GroupNode, ShapeNode, iter_shapes
 
 
 # Attributes
@@ -29,16 +30,21 @@ def collect_stylesheet_rules(root):
         if get_local_name(element) != 'style' or not element.text:
             continue
         css = re.sub(r'/\*.*?\*/', '', element.text, flags=re.DOTALL)
+        if '@' in css:
+            raise ValueError('SVG CSS at-rules are not supported')
         for selector_text, declaration_text in re.findall(r'([^{}]+)\{([^{}]*)\}', css):
             declarations = style_properties(ET.Element('style', {'style': declaration_text}))
             for selector in selector_text.split(','):
                 selector = selector.strip()
-                if selector and not re.search(r'[\s>+~:\[]', selector):
-                    specificity = 100 * selector.count('#') + 10 * selector.count('.')
-                    tag = re.match(r'^[A-Za-z_][\w-]*', selector)
-                    specificity += int(tag is not None)
-                    rules.append((specificity, order, selector, declarations))
-                    order += 1
+                if not selector or re.search(r'[\s>+~:\[]', selector):
+                    raise ValueError(f"Unsupported SVG CSS selector: {selector!r}")
+                specificity = 100 * selector.count('#') + 10 * selector.count('.')
+                tag = re.match(r'^[A-Za-z_][\w-]*', selector)
+                specificity += int(tag is not None)
+                rules.append((specificity, order, selector, declarations))
+                order += 1
+        if css.count('{') != css.count('}'):
+            raise ValueError('Malformed SVG stylesheet')
     return sorted(rules)
 
 
@@ -54,12 +60,20 @@ def selector_matches(elem, selector):
 
 
 def computed_style(elem, stylesheet_rules):
-    properties = {}
-    for _, _, selector, declarations in stylesheet_rules:
+    chosen = {}
+    def offer(name, value, specificity, order):
+        important = bool(re.search(r'!important\s*$', value, re.I))
+        value = re.sub(r'!important\s*$', '', value, flags=re.I).strip()
+        rank = (important, specificity, order)
+        if name not in chosen or rank >= chosen[name][0]:
+            chosen[name] = (rank, value)
+    for specificity, order, selector, declarations in stylesheet_rules:
         if selector_matches(elem, selector):
-            properties.update(declarations)
-    properties.update(style_properties(elem))
-    return properties
+            for name, value in declarations.items():
+                offer(name, value, specificity, order)
+    for name, value in style_properties(elem).items():
+        offer(name, value, 1000, len(stylesheet_rules))
+    return {name: value for name, (_, value) in chosen.items()}
 
 
 def style_value(elem, name, properties=None):
@@ -82,24 +96,57 @@ def opacity_value(value, default=1.0):
 
 def parse_css_color(value):
     value = str(value or '').strip()
+    if value.lower() == 'transparent':
+        return 0, 0, 0, 0.0
+    functional = re.fullmatch(r'rgba?\(\s*(.*?)\s*\)', value, re.I)
+    if functional:
+        parts = [part for part in re.split(r'\s*,\s*|\s+', functional.group(1)) if part]
+        if len(parts) not in (3, 4) or (value[:4].lower() == 'rgba' and len(parts) != 4):
+            raise ValueError(f"Unsupported SVG color: {value}")
+        def channel(part):
+            number = float(part[:-1]) * 255 / 100 if part.endswith('%') else float(part)
+            if not math.isfinite(number) or not 0 <= number <= 255:
+                raise ValueError(f"Invalid SVG color channel: {part}")
+            return round(number)
+        rgb = tuple(channel(part) for part in parts[:3])
+        if len(parts) == 4:
+            try:
+                alpha = (float(parts[3][:-1]) / 100 if parts[3].endswith('%')
+                         else float(parts[3]))
+            except ValueError as exc:
+                raise ValueError(f"Invalid SVG alpha: {parts[3]}") from exc
+            if not math.isfinite(alpha) or not 0 <= alpha <= 1:
+                raise ValueError(f"Invalid SVG alpha: {parts[3]}")
+        else:
+            alpha = 1.0
+        return *rgb, alpha
     try:
         rgba = ImageColor.getrgb(value)
     except (TypeError, ValueError):
-        return 0, 0, 0, 1.0
+        raise ValueError(f"Unsupported SVG color: {value}")
     if len(rgba) == 3:
         return *rgba, 1.0
     return *rgba[:3], rgba[3] / 255.0
 
 
 def parse_color(elem, inherited_opacity=1.0, inherited_fill_opacity=1.0,
-                inherited_fill=None, properties=None):
+                inherited_fill=None, properties=None, inherited_color=None,
+                allow_mask=False):
     r, g, b = 0, 0, 0
     properties = properties if properties is not None else style_properties(elem)
     fill = style_value(elem, 'fill', properties)
     if fill is None or str(fill).strip().lower() == 'inherit':
         fill = inherited_fill
+    if fill and str(fill).strip().lower() == 'currentcolor':
+        fill = style_value(elem, 'color', properties) or inherited_color or 'black'
+        if str(fill).strip().lower() in ('currentcolor', 'inherit'):
+            fill = inherited_color or 'black'
     color_alpha = 1.0
-    if fill and not str(fill).strip().lower().startswith('url('):
+    if fill and str(fill).strip().lower().startswith('url('):
+        if not allow_mask or not re.fullmatch(r'''url\(\s*['"]?#mask_indicator_(?:dark|light)['"]?\s*\)''', str(fill).strip(), re.I):
+            raise ValueError(f"Unsupported SVG paint: {fill}")
+        fill = 'white'
+    if fill and str(fill).strip().lower() != 'none':
         r, g, b, color_alpha = parse_css_color(fill)
 
     fill_opacity = opacity_value(
@@ -112,7 +159,7 @@ def parse_color(elem, inherited_opacity=1.0, inherited_fill_opacity=1.0,
 
 
 def get_href(elem):
-    return elem.get(f'{{{XLINK_NS}}}href') or elem.get('href', '')
+    return elem.get('href') if 'href' in elem.attrib else elem.get(f'{{{XLINK_NS}}}href', '')
 
 
 def get_local_name(elem):
@@ -120,10 +167,21 @@ def get_local_name(elem):
 
 
 def parse_float_attr(elem, name, default=0.0):
-    try:
-        value = float(elem.get(name, default))
-    except (TypeError, ValueError):
+    raw = elem.get(name)
+    if raw is None:
         return default
+    match = re.fullmatch(r'\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(px|in|cm|mm|pt|pc|q)?\s*', raw, re.I)
+    if not match:
+        if raw.strip().lower() in ('nan', '+nan', '-nan', 'inf', '+inf', '-inf',
+                                    'infinity', '+infinity', '-infinity'):
+            raise ValueError(f"SVG {name} contains a non-finite number")
+        raise ValueError(f"Unsupported SVG {name} length: {raw}")
+    try:
+        value = float(match.group(1)) * {'': 1, 'px': 1, 'in': 96,
+            'cm': 96 / 2.54, 'mm': 96 / 25.4, 'pt': 96 / 72,
+            'pc': 16, 'q': 96 / 101.6}[str(match.group(2) or '').lower()]
+    except (TypeError, ValueError):
+        raise ValueError(f"Invalid SVG {name} length: {raw}")
     if not math.isfinite(value):
         raise ValueError(f"SVG {name} contains a non-finite number")
     return value
@@ -142,19 +200,42 @@ def parse_transform(transform_str):
     if not transform_str:
         return current_matrix
 
-    for cmd, args in re.findall(r'([a-zA-Z]+)\s*\(([^)]+)\)', transform_str):
-        vals = [float(x) for x in args.replace(',', ' ').split()]
+    number = re.compile(r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?')
+    command = re.compile(r'([A-Za-z]+)\s*\(([^()]*)\)')
+    pos = 0
+    for match in command.finditer(transform_str):
+        separator = transform_str[pos:match.start()]
+        if pos == 0:
+            valid_separator = not separator.strip()
+        else:
+            valid_separator = bool(re.fullmatch(r'\s+|\s*,\s*', separator))
+        if not valid_separator:
+            raise ValueError(f"Invalid SVG transform near {transform_str[pos:match.start()]!r}")
+        cmd, args = match.groups()
+        vals = []
+        cursor = 0
+        for token in number.finditer(args):
+            separator = args[cursor:token.start()]
+            if not vals:
+                valid_separator = not separator.strip()
+            else:
+                valid_separator = (bool(re.fullmatch(r'\s+|\s*,\s*', separator))
+                                   or (not separator and token.group()[0] in '+-'))
+            if not valid_separator:
+                raise ValueError(f"Invalid SVG transform arguments: {args!r}")
+            vals.append(float(token.group()))
+            cursor = token.end()
+        if args[cursor:].strip():
+            raise ValueError(f"Invalid SVG transform arguments: {args!r}")
         if not all(math.isfinite(value) for value in vals):
             raise ValueError("SVG transform contains a non-finite number")
-        if not vals:
-            continue
         if cmd == 'matrix' and len(vals) == 6:
             m = tuple(vals)
-        elif cmd == 'translate':
+        elif cmd == 'translate' and len(vals) in (1, 2):
             m = (1.0, 0.0, 0.0, 1.0, vals[0], vals[1] if len(vals) > 1 else 0.0)
-        elif cmd == 'scale':
+        elif cmd == 'scale' and len(vals) in (1, 2):
             m = (vals[0], 0.0, 0.0, vals[1] if len(vals) > 1 else vals[0], 0.0, 0.0)
-        elif cmd == 'rotate':
+        elif cmd == 'rotate' and len(vals) in (1, 3):
             a = math.radians(vals[0])
             ca, sa = math.cos(a), math.sin(a)
             if len(vals) >= 3:
@@ -162,27 +243,35 @@ def parse_transform(transform_str):
                 m = (ca, sa, -sa, ca, cx - cx*ca + cy*sa, cy - cx*sa - cy*ca)
             else:
                 m = (ca, sa, -sa, ca, 0.0, 0.0)
-        elif cmd == 'skewX':
+        elif cmd == 'skewX' and len(vals) == 1:
             m = (1.0, 0.0, math.tan(math.radians(vals[0])), 1.0, 0.0, 0.0)
-        elif cmd == 'skewY':
+        elif cmd == 'skewY' and len(vals) == 1:
             m = (1.0, math.tan(math.radians(vals[0])), 0.0, 1.0, 0.0, 0.0)
         else:
-            continue
+            raise ValueError(f"Unsupported SVG transform: {cmd}({args})")
         current_matrix = mult_matrix(current_matrix, m)
+        pos = match.end()
+    if transform_str[pos:].strip():
+        raise ValueError(f"Invalid SVG transform near {transform_str[pos:]!r}")
     return current_matrix
 
 
 def parse_svg_length(value, default):
-    match = re.match(r'\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))', value or '')
-    if not match:
+    if value is None:
         return default
-    parsed = float(match.group(1))
-    return parsed if math.isfinite(parsed) and parsed > 0 else default
+    elem = ET.Element('length', {'value': value})
+    parsed = parse_float_attr(elem, 'value')
+    if parsed <= 0:
+        raise ValueError('SVG canvas length must be positive')
+    return parsed
 
 
 def get_svg_canvas(root):
-    viewbox = re.split(r'[\s,]+', root.get('viewBox', '').strip())
-    if len(viewbox) == 4:
+    raw_viewbox = root.get('viewBox')
+    if raw_viewbox is not None:
+        viewbox = re.split(r'[\s,]+', raw_viewbox.strip())
+        if len(viewbox) != 4:
+            raise ValueError('Invalid SVG viewBox')
         try:
             canvas_x, canvas_y, canvas_w, canvas_h = map(float, viewbox)
             if (all(math.isfinite(value) for value in
@@ -190,7 +279,8 @@ def get_svg_canvas(root):
                     and canvas_w > 0 and canvas_h > 0):
                 return canvas_x, canvas_y, canvas_w, canvas_h
         except ValueError:
-            pass
+            raise ValueError('Invalid SVG viewBox')
+        raise ValueError('Invalid SVG viewBox')
     return 0.0, 0.0, parse_svg_length(root.get('width'), 1920.0), parse_svg_length(root.get('height'), 1080.0)
 
 
@@ -203,12 +293,33 @@ def decompose_matrix(a, b, c, d, e, f, min_x, min_y, canvas_x, canvas_y, canvas_
     A, B, C, D = a, -b, -c, d
     sx = math.sqrt(A*A + B*B)
     if sx < 1e-6:
-        return tx, ty, 0, 0, 0, 0
+        raise ValueError('SVG transform has a degenerate X scale')
     rot_rad = math.atan2(B, A)
     rot_deg = math.degrees(rot_rad) % 360.0
     sy = -C * math.sin(rot_rad) + D * math.cos(rot_rad)
-    skew = (C * math.cos(rot_rad) + D * math.sin(rot_rad)) / sy if abs(sy) > 1e-6 else 0.0
-    return tx, ty, sx * scale_factor, sy * scale_factor, rot_deg, skew
+    if abs(sy) < 1e-6:
+        raise ValueError('SVG transform has a degenerate Y scale')
+    skew = (C * math.cos(rot_rad) + D * math.sin(rot_rad)) / sy
+    result = (tx, ty, sx * scale_factor, sy * scale_factor, rot_deg, skew)
+    if not (all(math.isfinite(value) for value in result)
+            and abs(tx) < 50000 and abs(ty) < 50000
+            and 1e-6 < abs(result[2]) < 200
+            and 1e-6 < abs(result[3]) < 5000 and abs(skew) < 200):
+        raise ValueError('SVG transform is outside FH6 numeric range')
+    try:
+        qtx, qty, qsx, qsy, qrot, qskew = struct.unpack('<6f', struct.pack('<6f', *result))
+    except (OverflowError, struct.error) as exc:
+        raise ValueError('SVG transform cannot be stored as FH6 FP32') from exc
+    angle = math.radians(qrot)
+    cosine, sine = math.cos(angle), math.sin(angle)
+    reconstructed = (qsx * cosine / scale_factor,
+                     -qsx * sine / scale_factor,
+                     -qsy * (cosine * qskew - sine) / scale_factor,
+                     qsy * (sine * qskew + cosine) / scale_factor)
+    if any(not math.isclose(expected, actual, rel_tol=2e-5, abs_tol=1e-5)
+           for expected, actual in zip((a, b, c, d), reconstructed)):
+        raise ValueError('SVG transform loses precision in FH6 parameters')
+    return result
 
 
 # Visibility
@@ -256,37 +367,108 @@ def is_empty_fill(elem, is_mask, inherited_fill=None, properties=None):
 # Parsing
 
 def collect_svg_defs(root):
-    """Collect symbols and pattern references."""
-    symbol_dict, pattern_dict = {}, {}
+    """Collect symbol viewBoxes and pattern references from the parsed SVG."""
+    symbol_dict, pattern_dict, symbol_extents = {}, {}, {}
     for elem in root.iter():
         local = get_local_name(elem)
         if local == 'symbol':
             symbol_id = elem.get('id')
             viewbox_str = elem.get('viewBox')
             if symbol_id and viewbox_str:
-                vb = viewbox_str.split()
+                vb = re.split(r'[\s,]+', viewbox_str.strip())
                 if len(vb) == 4:
                     try:
                         values = tuple(map(float, vb))
                     except ValueError:
                         continue
-                    if all(math.isfinite(value) for value in values):
+                    if (all(math.isfinite(value) for value in values)
+                            and values[2] > 0 and values[3] > 0):
                         symbol_dict[f"#{symbol_id}"] = values[:2]
+                        side = max(values[2:])
+                        shape_word = _shape_word_from_symbol_id(symbol_id)
+                        if shape_word is not None:
+                            symbol_extents[shape_word] = (64 * values[2] / side,
+                                                          64 * values[3] / side)
         elif local == 'pattern':
             pattern_id = elem.get('id')
             if pattern_id:
                 pattern_dict[f"#{pattern_id}"] = get_href(elem)
-    return symbol_dict, pattern_dict
+    return symbol_dict, pattern_dict, symbol_extents
+
+
+_FH6_SYMBOL_ID = re.compile(r'fh6_t([0-9]+)_i([0-9]+)_w([0-9]+)\Z')
+
+
+def _shape_word_from_symbol_id(symbol_id):
+    match = _FH6_SYMBOL_ID.fullmatch(symbol_id)
+    if match is None or int(match.group(1)) == 0 or int(match.group(2)) == 0:
+        return None
+    return int(match.group(3))
+
+
+def is_known_fh6_shape_word(word):
+    """FH6 families are 40 IDs wide, starting at 101..901 and 1301..3801."""
+    family, index = divmod(word - 1, 100)
+    return (1 <= family <= 9 or 13 <= family <= 38) and index < 40
 
 
 def process_svg(svg_path):
     """Return the model root and FH6 node count."""
     tree = ET.parse(svg_path)
     root = tree.getroot()
+    if get_local_name(root) != 'svg':
+        raise ValueError('SVG root element is required')
+    ids = [elem.get('id') for elem in root.iter() if elem.get('id')]
+    if len(ids) != len(set(ids)):
+        raise ValueError('SVG contains duplicate element IDs')
+    if root.get('transform'):
+        raise ValueError('Root SVG transform is not supported')
+    aspect = root.get('preserveAspectRatio', 'xMidYMid meet').strip()
+    if aspect not in ('', 'xMidYMid meet'):
+        raise ValueError(f"Unsupported root preserveAspectRatio: {aspect}")
 
     canvas_x, canvas_y, canvas_w, canvas_h = get_svg_canvas(root)
+    if root.get('viewBox') and ((root.get('width') is None) != (root.get('height') is None)):
+        raise ValueError('Root SVG width and height must both be specified')
+    if root.get('viewBox') and root.get('width') and root.get('height'):
+        viewport_w = parse_svg_length(root.get('width'), canvas_w)
+        viewport_h = parse_svg_length(root.get('height'), canvas_h)
+        if not math.isclose(viewport_w / viewport_h, canvas_w / canvas_h,
+                            rel_tol=1e-9):
+            raise ValueError('Root viewport aspect ratio differs from viewBox')
 
-    symbol_dict, pattern_dict = collect_svg_defs(root)
+    symbol_dict, pattern_dict, half_extents = collect_svg_defs(root)
+    from .cgroup_codec import shape_matrix
+
+    def check_symbol(href):
+        if not href.startswith('#'):
+            raise ValueError(f"Invalid SVG symbol reference: {href!r}")
+        shape_word = _shape_word_from_symbol_id(href[1:])
+        if shape_word is None:
+            raise ValueError(f"Invalid FH6 symbol ID: {href}")
+        if not is_known_fh6_shape_word(shape_word):
+            raise ValueError(f"Unknown FH6 ShapeWord: {shape_word}")
+        if href not in symbol_dict:
+            raise ValueError(f"Missing FH6 symbol definition or viewBox: {href}")
+        return shape_word
+
+    def opacity_can_flatten(group):
+        boxes = []
+        for shape in iter_shapes(group):
+            if shape.is_mask:
+                return False
+            half_x, half_y = half_extents.get(shape.shape_word, (64.0, 64.0))
+            a, b, c, d = shape_matrix(shape)
+            radius_x = abs(a) * half_x + abs(c) * half_y
+            radius_y = abs(b) * half_x + abs(d) * half_y
+            box = (shape.tx - radius_x, shape.ty - radius_y,
+                   shape.tx + radius_x, shape.ty + radius_y)
+            if any(not (box[2] <= other[0] or other[2] <= box[0]
+                        or box[3] <= other[1] or other[3] <= box[1])
+                   for other in boxes):
+                return False
+            boxes.append(box)
+        return True
     stylesheet_rules = collect_stylesheet_rules(root)
     style_cache = {}
 
@@ -295,6 +477,16 @@ def process_svg(svg_path):
         properties = style_cache.get(key)
         if properties is None:
             properties = computed_style(element, stylesheet_rules)
+            unsupported = ('transform', 'transform-origin', 'transform-box', 'filter',
+                           'clip-path', 'mask', 'mix-blend-mode', 'isolation')
+            for name in unsupported:
+                value = (properties.get(name) if name == 'transform'
+                         else style_value(element, name, properties))
+                if value and str(value).strip().lower() not in ('none', 'normal', 'initial'):
+                    raise ValueError(f"Unsupported SVG {name} on {element.get('id') or get_local_name(element)}")
+            stroke = style_value(element, 'stroke', properties)
+            if stroke and str(stroke).strip().lower() not in ('none', 'initial'):
+                raise ValueError(f"Unsupported SVG stroke on {element.get('id') or get_local_name(element)}")
             style_cache[key] = properties
         return properties
 
@@ -302,18 +494,21 @@ def process_svg(svg_path):
 
     def parse_children(parent, parent_matrix, inherited_opacity=1.0,
                        inherited_fill_opacity=1.0,
-                       inherited_fill=None, inherited_visibility='visible'):
+                       inherited_fill=None, inherited_visibility='visible',
+                       inherited_color='black'):
         nonlocal total_fh6_nodes
         group = GroupNode(name=parent.get('id', ''))
 
         for elem in list(parent):
             local = get_local_name(elem)
-            if local in ('defs', 'symbol', 'pattern', 'metadata', 'namedview'):
+            if local in ('defs', 'symbol', 'pattern', 'metadata', 'namedview', 'style', 'title', 'desc'):
                 continue
+            try:
+                elem_matrix = mult_matrix(parent_matrix, parse_transform(elem.get('transform', '')))
+            except ValueError as exc:
+                raise ValueError(f"SVG element {elem.get('id') or local}: {exc}") from exc
 
-            elem_matrix = mult_matrix(parent_matrix, parse_transform(elem.get('transform', '')))
-
-            if local == 'g':
+            if local in ('g', 'a'):
                 properties = properties_for(elem)
                 displayed, visibility = element_visibility(
                     elem, inherited_visibility, properties
@@ -329,21 +524,33 @@ def process_svg(svg_path):
                 group_fill = style_value(elem, 'fill', properties)
                 if group_fill is None or str(group_fill).strip().lower() == 'inherit':
                     group_fill = inherited_fill
+                group_color = style_value(elem, 'color', properties)
+                if group_color is None or str(group_color).strip().lower() == 'inherit':
+                    group_color = inherited_color
+                if str(group_color).strip().lower() == 'currentcolor':
+                    group_color = inherited_color
                 child_group = parse_children(
                     elem, elem_matrix, group_opacity, group_fill_opacity,
-                    group_fill, visibility
+                    group_fill, visibility, group_color
                 )
+                if opacity_value(style_value(elem, 'opacity', properties)) < 1 and not opacity_can_flatten(child_group):
+                    raise ValueError(f"Group opacity cannot be represented without compositing: {elem.get('id') or local}")
                 if child_group.children:
                     group.children.append(child_group)
                 continue
 
             if local != 'use':
-                continue
+                properties = properties_for(elem)
+                displayed, visibility = element_visibility(
+                    elem, inherited_visibility, properties)
+                if not displayed or (visibility in ('hidden', 'collapse') and not list(elem)):
+                    continue
+                raise ValueError(f"Unsupported visible SVG element: {elem.get('id') or local}")
 
             href = get_href(elem)
-            match = re.search(r'fh6_t(\d+)_i(\d+)_w(\d+)', href)
-            if not match:
-                continue
+            shape_word = check_symbol(href)
+            if elem.get('width') is not None or elem.get('height') is not None:
+                raise ValueError(f"Unsupported use viewport size: {elem.get('id') or href}")
 
             total_fh6_nodes += 1
             properties = properties_for(elem)
@@ -355,10 +562,9 @@ def process_svg(svg_path):
                     or is_empty_fill(elem, is_current_mask, inherited_fill, properties)):
                 continue
 
-            shape_word = int(match.group(3))
             r, g, b, a_val = parse_color(
                 elem, inherited_opacity, inherited_fill_opacity,
-                inherited_fill, properties
+                inherited_fill, properties, inherited_color, is_current_mask
             )
             if a_val == 0:
                 continue
@@ -380,15 +586,18 @@ def process_svg(svg_path):
 
     root_properties = properties_for(root)
     root_displayed, root_visibility = element_visibility(root, 'visible', root_properties)
-    if not root_displayed or root_visibility in ('hidden', 'collapse'):
+    if not root_displayed:
         return GroupNode(name=root.get('id', '')), total_fh6_nodes
     root_opacity = opacity_value(style_value(root, 'opacity', root_properties))
     root_fill_opacity = opacity_value(style_value(root, 'fill-opacity', root_properties))
     root_fill = style_value(root, 'fill', root_properties)
     root_group = parse_children(
         root, (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
-        root_opacity, root_fill_opacity, root_fill, root_visibility
+        root_opacity, root_fill_opacity, root_fill, root_visibility,
+        style_value(root, 'color', root_properties) or 'black'
     )
+    if root_opacity < 1 and not opacity_can_flatten(root_group):
+        raise ValueError('Root opacity cannot be represented without compositing')
     return root_group, total_fh6_nodes
 
 
@@ -399,6 +608,7 @@ def write_inkscape_svg(tree, svg_path):
     ET.register_namespace('', SVG_NS)
     ET.register_namespace('xlink', XLINK_NS)
     root = tree.getroot()
+    validate_generated_svg(root)
     ET.indent(tree, space='  ')
     output_dir = os.path.dirname(os.path.abspath(svg_path))
     temp_path = None
@@ -421,6 +631,38 @@ def write_inkscape_svg(tree, svg_path):
                 os.remove(temp_path)
             except OSError:
                 pass
+
+
+def validate_generated_svg(root):
+    """Keep exported documents free of private fields and broken references."""
+    if root.tag != f'{{{SVG_NS}}}svg':
+        raise ValueError('Generated SVG has an invalid root')
+    allowed = {'svg', 'defs', 'symbol', 'pattern', 'mask', 'image', 'rect',
+               'circle', 'ellipse', 'path', 'polygon', 'polyline', 'line',
+               'g', 'use'}
+    ids = set()
+    symbol_ids = set()
+    uses = []
+    for element in root.iter():
+        local = get_local_name(element)
+        if element.tag != f'{{{SVG_NS}}}{local}' or local not in allowed:
+            raise ValueError(f'Unsupported generated SVG element: {element.tag}')
+        element_id = element.get('id')
+        if element_id:
+            if element_id in ids:
+                raise ValueError(f'Duplicate generated SVG ID: {element_id}')
+            ids.add(element_id)
+            if local == 'symbol':
+                symbol_ids.add(element_id)
+        for name in element.attrib:
+            namespace = name[1:].split('}', 1)[0] if name.startswith('{') else ''
+            if name.startswith('data-') or namespace not in ('', SVG_NS, XLINK_NS):
+                raise ValueError(f'Unsupported generated SVG attribute: {name}')
+        if local == 'use':
+            uses.append(get_href(element))
+    for href in uses:
+        if not href.startswith('#') or href[1:] not in symbol_ids:
+            raise ValueError(f'Unresolved generated SVG reference: {href}')
 
 
 def create_inkscape_document():
@@ -451,7 +693,8 @@ def append_shape_use(parent, href, symbol_dict, svg_cx, svg_cy, sx, sy, rot_deg,
     use_elem.set(f'{{{XLINK_NS}}}href', href)
     use_elem.set('x', '0')
     use_elem.set('y', '0')
-    use_elem.set('transform', f"matrix({ma:.6f},{mb:.6f},{mc:.6f},{md:.6f},{me:.6f},{mf:.6f})")
+    use_elem.set('transform', 'matrix(' + ','.join(format(value, '.9g') for value in
+                     (ma, mb, mc, md, me, mf)) + ')')
     use_elem.set('style', f"fill:{fill}; opacity:{opacity};")
     use_elem.set('id', node_id)
     parent.append(use_elem)
@@ -466,7 +709,7 @@ def append_svg_shape(parent, shape, href, symbol_dict, canvas_w, canvas_h, node_
     else:
         fill = f"#{shape.r:02x}{shape.g:02x}{shape.b:02x}"
     append_shape_use(parent, href, symbol_dict, svg_cx, svg_cy, shape.sx, shape.sy,
-                     shape.rot, fill, round(shape.a / 255.0, 4), node_id, shape.skew)
+                     shape.rot, fill, format(shape.a / 255.0, '.9g'), node_id, shape.skew)
 
 
 def append_svg_group(parent, group, href_by_word, symbol_dict, canvas_w, canvas_h,

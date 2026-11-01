@@ -92,6 +92,77 @@ def prepare_json_shapes(shapes, supported_types):
     return prepared, skipped
 
 
+def json_shape_array(document):
+    """Accept either a top-level array or an object containing an array."""
+    if isinstance(document, list):
+        shapes = document
+    elif isinstance(document, dict):
+        shapes = document.get('shapes')
+    else:
+        raise ValueError('JSON root must be an object or an array')
+    if not isinstance(shapes, list) or not shapes:
+        raise ValueError('JSON shapes must be a nonempty array')
+    return shapes
+
+
+def geometrize_canvas_marker(shapes):
+    """Recognize the transparent first rectangle only when it encloses the art."""
+    if not shapes:
+        return None
+    first = shapes[0]
+    data = first.get('data', [])
+    if (first.get('type') != 1 or len(data) < 4
+            or not json_shape_is_transparent(first)
+            or data[0] != 0 or data[1] != 0
+            or data[2] < 256 or data[3] < 256
+            or (len(data) >= 5 and data[4] % 360 != 0)):
+        return None
+    width, height = data[2:4]
+    visible = 0
+    for shape in shapes[1:]:
+        if shape.get('type') not in (1, 16) or json_shape_is_transparent(shape):
+            continue
+        values = shape.get('data', [])
+        if len(values) < 4:
+            return None
+        visible += 1
+        if shape['type'] == 1:
+            x0, y0, extent_x, extent_y = values[:4]
+            center_x, center_y = x0 + extent_x / 2, y0 + extent_y / 2
+            radius = math.hypot(extent_x / 2, extent_y / 2)
+        else:
+            x, y, radius_x, radius_y = values[:4]
+            center_x, center_y = x, y
+            radius = math.hypot(radius_x, radius_y)
+        if (center_x - radius < 0 or center_y - radius < 0
+                or center_x + radius > width or center_y + radius > height):
+            return None
+    return 0 if visible else None
+
+
+def vinylizer_bounds_center(shapes, supported_types, opacity_threshold):
+    """Center the actual rotated bounds of the converted JSON shapes."""
+    min_x = min_y = float('inf')
+    max_x = max_y = float('-inf')
+    for shape in shapes:
+        if (shape.get('type') not in supported_types
+                or json_shape_is_at_or_below_opacity(shape, opacity_threshold)):
+            continue
+        data = shape.get('data', [])
+        if len(data) < 4:
+            continue
+        x, y = data[:2]
+        half_w, half_h = abs(data[2]) / 2, abs(data[3]) / 2
+        radians = math.radians(data[4]) if len(data) >= 5 else 0.0
+        radius_x = abs(math.cos(radians)) * half_w + abs(math.sin(radians)) * half_h
+        radius_y = abs(math.sin(radians)) * half_w + abs(math.cos(radians)) * half_h
+        min_x, max_x = min(min_x, x - radius_x), max(max_x, x + radius_x)
+        min_y, max_y = min(min_y, y - radius_y), max(max_y, y + radius_y)
+    if min_x == float('inf'):
+        return None
+    return (min_x + max_x) / 2, (min_y + max_y) / 2
+
+
 def has_supported_json_shape(shapes, supported_types):
     return any(
         shape.get("type") in supported_types and len(shape.get("data", [])) >= 4
@@ -161,9 +232,7 @@ def workflow_geometrize_to_svg():
         with open(json_path, 'r', encoding='utf-8') as f:
             geo_data = json.load(f)
 
-        shapes = geo_data.get("shapes", geo_data if isinstance(geo_data, list) else [])
-        if isinstance(geo_data, dict) and "shapes" not in geo_data:
-            shapes = []
+        shapes = json_shape_array(geo_data)
 
         if not shapes:
             ui.log(tr("错误：JSON 文件中没有找到有效的形状数据。", "Error: No valid shapes found in JSON."))
@@ -180,12 +249,10 @@ def workflow_geometrize_to_svg():
         ui.log(tr(f"读取 JSON 失败：{e}", f"Failed to read JSON: {e}"))
         return
 
-    boundary_index = next((
-        idx for idx, shape in enumerate(shapes)
-        if shape.get("type") == 1
-        and len(shape.get("data", [])) >= 4
-        and json_shape_is_transparent(shape)
-    ), None)
+    # Geometrize's optional canvas marker is the first shape only.
+    boundary_index = geometrize_canvas_marker(shapes)
+    if boundary_index is not None:
+        ui.log('Geometrize transparent canvas marker detected; generating four mask layers.')
 
     raw_layer_count = 4 if boundary_index is not None else 0
     layer_count = raw_layer_count
@@ -374,9 +441,7 @@ def workflow_vinylizer_to_svg():
         with open(json_path, 'r', encoding='utf-8') as f:
             vin_data = json.load(f)
 
-        shapes = vin_data.get("shapes", vin_data if isinstance(vin_data, list) else [])
-        if isinstance(vin_data, dict) and "shapes" not in vin_data:
-            shapes = []
+        shapes = json_shape_array(vin_data)
 
         if not shapes:
             ui.log(tr("错误：JSON 文件中没有找到有效的形状数据。", "Error: No valid shapes found in JSON."))
@@ -456,31 +521,8 @@ def workflow_vinylizer_to_svg():
 
         append_shape = append_shape_wrapper(target_container, symbol_dict)
 
-        # Canvas bounds
-        min_x, max_x = float('inf'), float('-inf')
-        min_y, max_y = float('inf'), float('-inf')
-        has_valid_shapes = False
-
-        for shape in shapes:
-            if shape.get("type") not in shape_specs:
-                continue
-            if json_shape_is_at_or_below_opacity(shape, opacity_threshold):
-                continue
-            data = shape.get("data", [])
-            if len(data) >= 4:
-                has_valid_shapes = True
-                geo_cx = float(data[0])
-                geo_cy = float(data[1])
-                min_x = min(min_x, geo_cx)
-                max_x = max(max_x, geo_cx)
-                min_y = min(min_y, geo_cy)
-                max_y = max(max_y, geo_cy)
-
-        if has_valid_shapes:
-            geo_cx_center = (min_x + max_x) / 2.0
-            geo_cy_center = (min_y + max_y) / 2.0
-        else:
-            geo_cx_center, geo_cy_center = canvas_w / 2.0, canvas_h / 2.0
+        center = vinylizer_bounds_center(shapes, shape_specs, opacity_threshold)
+        geo_cx_center, geo_cy_center = center or (canvas_w / 2.0, canvas_h / 2.0)
 
         offset_x = (canvas_w / 2.0) - geo_cx_center
         offset_y = (canvas_h / 2.0) - geo_cy_center
@@ -583,7 +625,7 @@ def workflow_inject_svg():
 
     if layer_count > MAX_VINYL_GROUP_LAYERS:
         ui.log(tr(f"错误：有效图层数 {layer_count} 超过 FH6 彩绘纹饰分组上限 {MAX_VINYL_GROUP_LAYERS}，无法注入。",
-                  f"Error: {layer_count} valid layers exceeds the FH6 vinyl group limit of {MAX_VINYL_GROUP_LAYERS}. Injection cancelled."))
+                  f"Error: {layer_count} valid layers exceeds this project's safety limit of {MAX_VINYL_GROUP_LAYERS}. Injection cancelled."))
         return
 
     ui.log(tr("[3/3] 扫描可写入的彩绘纹饰分组...", "[3/3] Scanning writable vinyl groups..."))
@@ -600,7 +642,7 @@ def workflow_inject_svg():
     if not ui.ask_confirm(
             tr("确认注入", "Confirm injection"),
             tr(f"将覆盖以下分组：\n{selected_group['title']} - {selected_group['author']}\n确定继续吗？",
-               f"The following vinyl group will be overwritten:\n{selected_group['title']} - {selected_group['author']}\nContinue?")):
+               f"The following vinyl group will be overwritten:\n{selected_group['title']} - {selected_group['author']}\nClose FH6 and wait for cloud sync to finish before continuing. Continue?")):
         ui.log(tr("已取消", "Cancelled"))
         return
 

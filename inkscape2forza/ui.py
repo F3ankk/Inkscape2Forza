@@ -335,7 +335,7 @@ class App(tk.Tk):
         self.set_busy(True)
         threading.Thread(
             target=self._run_workflow, args=(action,),
-            name="inkscape2forza-workflow", daemon=True,
+            name="inkscape2forza-workflow", daemon=False,
         ).start()
 
     def _run_workflow(self, action):
@@ -377,10 +377,9 @@ class App(tk.Tk):
 
     def on_close(self):
         if self._busy:
-            if not messagebox.askyesno(tr("退出", "Quit"),
-                                       tr("操作进行中，确定要退出吗？", "Operation in progress. Quit anyway?"),
-                                       parent=self):
-                return
+            messagebox.showinfo('Inkscape2Forza',
+                                'Please wait for the current operation to finish.', parent=self)
+            return
         self.destroy()
 
 

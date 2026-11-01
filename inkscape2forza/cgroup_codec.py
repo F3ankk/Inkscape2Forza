@@ -1,11 +1,16 @@
 """FH6 C_group codec and file I/O."""
 import ctypes
+import base64
+import contextlib
+import hashlib
+import json
 import math
 import os
+from pathlib import Path
 import shutil
 import struct
-import tempfile
 import zlib
+import uuid
 from ctypes import wintypes
 
 from .common import MAX_VINYL_GROUP_LAYERS
@@ -21,7 +26,7 @@ MAX_CGROUP_PAYLOAD_BYTES = 16 * 1024 * 1024
 # Fixed shape ID flags.
 SHAPE_ID_FIXED_BITS = 0x0200
 SHAPE_ID_MASK_BIT = 0x00000001
-SHAPE_ID_ALIASES = {0x07d0: 0x07d1}
+SHAPE_ID_ALIASES = {2000: 2001, 3000: 3001}
 
 if os.name == 'nt':
     class _FileTime(ctypes.Structure):
@@ -126,18 +131,20 @@ def validate_model_tree(root_group):
     if not isinstance(root_group, GroupNode):
         raise ValueError("C_group root must be a group")
     seen = set()
-    stack = [root_group]
+    stack = [(root_group, 0)]
     layers = 0
     while stack:
-        node = stack.pop()
+        node, depth = stack.pop()
         node_id = id(node)
         if node_id in seen:
             raise ValueError("C_group model contains a cycle")
         seen.add(node_id)
         if isinstance(node, GroupNode):
+            if depth > 128:
+                raise ValueError('C_group nesting exceeds the project safety limit of 128')
             if len(node.children) > 0xffff:
                 raise ValueError("C_group has too many direct children")
-            stack.extend(node.children)
+            stack.extend((child, depth + 1) for child in node.children)
             continue
         if not isinstance(node, ShapeNode):
             raise ValueError("C_group model contains an unsupported node")
@@ -146,6 +153,7 @@ def validate_model_tree(root_group):
             raise ValueError(f"C_group exceeds {MAX_VINYL_GROUP_LAYERS} layers")
         if not isinstance(node.shape_word, int) or not 0 <= node.shape_word <= 0xffff:
             raise ValueError("C_group shape ID is out of range")
+        node.shape_word = SHAPE_ID_ALIASES.get(node.shape_word, node.shape_word)
         values = (node.rot, node.tx, node.ty, node.sx, node.sy, node.skew)
         if not all(isinstance(value, (int, float)) and math.isfinite(value)
                    for value in values):
@@ -322,24 +330,39 @@ def update_header_layer_count(header_data, layer_count):
             raise ValueError(f"C_group header is truncated at {label}")
 
     require(8, 0, "name header")
+    if struct.unpack_from('<I', header_data, 0)[0] != 7:
+        raise ValueError('Only FH6 Header v7 can be modified')
     name_length = struct.unpack_from('<I', header_data, 4)[0]
+    if name_length > 4096:
+        raise ValueError('Header name length is invalid')
     offset = 8 + name_length * 2
 
     require(4, offset, "description length")
     description_length = struct.unpack_from('<I', header_data, offset)[0]
+    if description_length > 16384:
+        raise ValueError('Header description length is invalid')
     offset += 4 + description_length * 2
 
+    require(28, offset, 'date and asset metadata')
+    if struct.unpack_from('<I', header_data, offset + 16)[0] != 2:
+        raise ValueError('Header asset type is not a vinyl group')
     offset += 4 + 16 + 8
     require(4, offset, "creator length")
     creator_length = struct.unpack_from('<I', header_data, offset)[0]
+    if creator_length > 4096:
+        raise ValueError('Header creator length is invalid')
     offset += 4 + creator_length * 2
 
     section_marker_offset = offset + 28
     require(9 + 4, section_marker_offset, "section metadata")
     if header_data[section_marker_offset:section_marker_offset + 2] != b'\x01\x02':
         raise ValueError("C_group header section marker is invalid")
-
+    if header_data[section_marker_offset + 2:section_marker_offset + 9] != b'\x00' * 7:
+        raise ValueError('C_group Header v7 padding is invalid')
     layer_count_offset = section_marker_offset + 9
+    require(20, layer_count_offset, 'layer count and GUID')
+    if header_data[layer_count_offset + 4:layer_count_offset + 20] == b'\x00' * 16:
+        raise ValueError('C_group Header GUID is empty')
     updated = bytearray(header_data)
     struct.pack_into('<I', updated, layer_count_offset, layer_count)
     return bytes(updated)
@@ -475,101 +498,191 @@ def overwrite_file_preserving_metadata(target, replacement, metadata):
         raise
 
 
+def _recovery_base(target_cgroup):
+    key = hashlib.sha256(os.path.normcase(os.path.abspath(target_cgroup)).encode('utf-8')).hexdigest()[:24]
+    return Path.home() / '.inkscape2forza' / 'recovery' / key
+
+
+@contextlib.contextmanager
+def _save_lock(target_cgroup):
+    base = _recovery_base(target_cgroup)
+    base.mkdir(parents=True, exist_ok=True)
+    with open(base / 'write.lock', 'a+b') as lock:
+        lock.seek(0)
+        if lock.read(1) == b'':
+            lock.write(b'0')
+            lock.flush()
+        lock.seek(0)
+        try:
+            if os.name == 'nt':
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError('Another Inkscape2Forza save write is in progress') from exc
+        try:
+            yield base
+        finally:
+            lock.seek(0)
+            if os.name == 'nt':
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _write_durable(path, data):
+    with open(path, 'wb') as file_obj:
+        file_obj.write(data)
+        file_obj.flush()
+        os.fsync(file_obj.fileno())
+
+
+def _write_journal(directory, journal):
+    temporary = directory / 'journal.tmp'
+    _write_durable(temporary, json.dumps(journal, sort_keys=True).encode('utf-8'))
+    os.replace(temporary, directory / 'journal.json')
+
+
+def _json_metadata(metadata):
+    result = dict(metadata)
+    result['dacl'] = base64.b64encode(metadata['dacl']).decode('ascii') if metadata['dacl'] else None
+    return result
+
+
+def _restore_transaction(directory, journal):
+    originals = {}
+    for name in ('C_group', 'header'):
+        info = journal['files'][name]
+        source = directory / (name + '.original')
+        original = source.read_bytes()
+        if hashlib.sha256(original).hexdigest() != info['sha256']:
+            raise RuntimeError(f'Recovery copy is damaged: {source}')
+        originals[name] = original
+    for name in ('C_group', 'header'):
+        info = journal['files'][name]
+        source = directory / (name + '.original')
+        metadata = dict(info['metadata'])
+        metadata['dacl'] = base64.b64decode(metadata['dacl']) if metadata['dacl'] else None
+        overwrite_file_preserving_metadata(info['path'], source, metadata)
+        if read_file_read_only(info['path']) != originals[name]:
+            raise RuntimeError(f'Recovery verification failed: {info["path"]}')
+    journal['state'] = 'rolled_back'
+    _write_journal(directory, journal)
+
+
+def _recover_pending_locked(target_cgroup, base):
+    for directory in sorted(base.iterdir()):
+        journal_path = directory / 'journal.json'
+        if not directory.is_dir() or not journal_path.is_file():
+            continue
+        journal = json.loads(journal_path.read_text(encoding='utf-8'))
+        if journal['state'] != 'prepared':
+            continue
+        if (journal['files']['C_group']['path'] != os.path.abspath(target_cgroup)
+                or journal['files']['header']['path'] != os.path.join(
+                    os.path.dirname(os.path.abspath(target_cgroup)), 'header')):
+            raise RuntimeError(f'Recovery target mismatch: {directory}')
+        try:
+            _restore_transaction(directory, journal)
+        except Exception as exc:
+            raise RuntimeError(f'Unfinished save could not be recovered; copies remain in {directory}: {exc}') from exc
+
+
+def recover_pending_cgroup(target_cgroup):
+    """Restore both original files from any interrupted transaction."""
+    with _save_lock(target_cgroup) as base:
+        _recover_pending_locked(target_cgroup, base)
+
+
+def _assert_encoded_model(expected, actual):
+    def structure(node):
+        if isinstance(node, ShapeNode):
+            return 'shape'
+        return tuple(structure(child) for child in node.children)
+    if structure(expected) != structure(actual):
+        raise ValueError('Generated C_group nesting/order mismatch')
+    left, right = list(iter_shapes(expected)), list(iter_shapes(actual))
+    if len(left) != len(right):
+        raise ValueError('Generated C_group layer count mismatch')
+    delta = ((right[0].tx - left[0].tx), (right[0].ty - left[0].ty))
+    for index, (before, after) in enumerate(zip(left, right), 1):
+        if (before.shape_word, before.r, before.g, before.b, before.a, before.is_mask) != (
+                after.shape_word, after.r, after.g, after.b, after.a, after.is_mask):
+            raise ValueError(f'Generated C_group layer {index} identity/color/mask mismatch')
+        actual_values = (*shape_matrix(after), after.tx - delta[0], after.ty - delta[1])
+        expected_values = (*shape_matrix(before), before.tx, before.ty)
+        if any(not math.isclose(a, b, rel_tol=2e-5, abs_tol=2e-3)
+               for a, b in zip(actual_values, expected_values)):
+            raise ValueError(f'Generated C_group layer {index} transform mismatch')
+
+
 def write_cgroup_file(target_cgroup, root_group, shape_half_extents=None):
-    """Safely replace a valid C_group and its header."""
-    cgroup_metadata = snapshot_file_metadata(target_cgroup)
-    checked_data = read_file_read_only(target_cgroup)
-    decode_cgroup_payload(validate_cgroup_data(checked_data))
-
-    layer_count = count_shapes(root_group)
-    new_data = wrap_cgroup_payload(build_cgroup_payload(root_group, shape_half_extents))
-    decoded_new_root = decode_cgroup_payload(validate_cgroup_data(new_data))
-    if count_shapes(decoded_new_root) != layer_count:
-        raise ValueError("Generated C_group layer count mismatch")
-    header_path = os.path.join(os.path.dirname(target_cgroup), "header")
-    header_metadata = snapshot_file_metadata(header_path)
-    old_header_data = read_file_read_only(header_path)
-    new_header_data = update_header_layer_count(old_header_data, layer_count)
-
-    target_dir = os.path.dirname(target_cgroup)
-    temp_paths = []
-
-    def write_temp(data, suffix):
-        with tempfile.NamedTemporaryFile(
-                mode='wb', dir=target_dir, prefix='.inkscape2forza_',
-                suffix=suffix, delete=False) as temp_file:
-            temp_file.write(data)
-            temp_file.flush()
-            os.fsync(temp_file.fileno())
-            temp_paths.append(temp_file.name)
-            return temp_file.name
-
-    rollback_cgroup = rollback_header = None
-    cgroup_attempted = header_attempted = False
-    try:
-        temp_cgroup = write_temp(new_data, '.cgroup.tmp')
-        temp_header = write_temp(new_header_data, '.header.tmp')
-        rollback_cgroup = write_temp(checked_data, '.cgroup.rollback.tmp')
-        rollback_header = write_temp(old_header_data, '.header.rollback.tmp')
+    """Write both registered files with durable original copies and recovery state."""
+    target_cgroup = os.path.abspath(target_cgroup)
+    header_path = os.path.join(os.path.dirname(target_cgroup), 'header')
+    with _save_lock(target_cgroup) as base:
+        _recover_pending_locked(target_cgroup, base)
+        paths = {'C_group': target_cgroup, 'header': header_path}
+        old = {name: read_file_read_only(path) for name, path in paths.items()}
+        metadata = {name: snapshot_file_metadata(path) for name, path in paths.items()}
+        decode_cgroup_payload(validate_cgroup_data(old['C_group']))
+        layer_count = count_shapes(root_group)
+        new = {
+            'C_group': wrap_cgroup_payload(build_cgroup_payload(root_group, shape_half_extents)),
+            'header': update_header_layer_count(old['header'], layer_count),
+        }
+        _assert_encoded_model(root_group, decode_cgroup_payload(validate_cgroup_data(new['C_group'])))
+        directory = base / uuid.uuid4().hex
+        directory.mkdir()
+        journal = {'state': 'prepared', 'files': {}}
+        for name, path in paths.items():
+            _write_durable(directory / (name + '.original'), old[name])
+            _write_durable(directory / (name + '.new'), new[name])
+            journal['files'][name] = {
+                'path': path, 'sha256': hashlib.sha256(old[name]).hexdigest(),
+                'metadata': _json_metadata(metadata[name]),
+            }
+        for name in paths:
+            if ((directory / (name + '.original')).read_bytes() != old[name]
+                    or (directory / (name + '.new')).read_bytes() != new[name]):
+                raise RuntimeError(f'Transaction copy verification failed: {name}')
+        _write_journal(directory, journal)
         try:
-            shutil.copystat(target_cgroup, temp_cgroup)
-            shutil.copystat(header_path, temp_header)
-            shutil.copystat(target_cgroup, rollback_cgroup)
-            shutil.copystat(header_path, rollback_header)
-        except Exception:
-            pass
-
-        validate_cgroup_data(checked_data)
-        current_cgroup_metadata = snapshot_file_metadata(target_cgroup)
-        current_header_metadata = snapshot_file_metadata(header_path)
-        stable_keys = ('file_id', 'mtime_ns', 'birthtime_ns', 'attributes', 'dacl')
-        if (read_file_read_only(target_cgroup) != checked_data
-                or read_file_read_only(header_path) != old_header_data
-                or any(current_cgroup_metadata[key] != cgroup_metadata[key]
-                       for key in stable_keys)
-                or any(current_header_metadata[key] != header_metadata[key]
-                       for key in stable_keys)):
-            raise RuntimeError("The target save changed while preparing the import")
-        cgroup_attempted = True
-        overwrite_file_preserving_metadata(
-            target_cgroup, temp_cgroup, cgroup_metadata
-        )
-        header_attempted = True
-        try:
-            overwrite_file_preserving_metadata(
-                header_path, temp_header, header_metadata
-            )
-        except Exception:
+            for name, path in paths.items():
+                current = snapshot_file_metadata(path)
+                if read_file_read_only(path) != old[name] or any(
+                        current[key] != metadata[name][key]
+                        for key in ('file_id', 'mtime_ns', 'birthtime_ns', 'attributes', 'dacl')):
+                    raise RuntimeError(f'{name} changed during preparation')
+                overwrite_file_preserving_metadata(path, directory / (name + '.new'), metadata[name])
+                actual = read_file_read_only(path)
+                if (len(actual) != len(new[name])
+                        or hashlib.sha256(actual).digest() != hashlib.sha256(new[name]).digest()):
+                    raise RuntimeError(f'{name} did not match after write')
+            final_cgroup = read_file_read_only(target_cgroup)
+            if hashlib.sha256(final_cgroup).digest() != hashlib.sha256(new['C_group']).digest():
+                raise RuntimeError('C_group changed during final verification')
+            actual_payload = validate_cgroup_data(final_cgroup)
+            _assert_encoded_model(root_group, decode_cgroup_payload(actual_payload))
+            actual_header = read_file_read_only(header_path)
+            if (len(actual_header) != len(new['header'])
+                    or hashlib.sha256(actual_header).digest()
+                    != hashlib.sha256(new['header']).digest()):
+                raise RuntimeError('Header did not match after write')
+            for name, path in paths.items():
+                current = snapshot_file_metadata(path)
+                if any(current[key] != metadata[name][key]
+                       for key in ('file_id', 'mtime_ns', 'birthtime_ns', 'attributes', 'dacl')):
+                    raise RuntimeError(f'{name} identity or metadata changed after write')
+            journal['state'] = 'committed'
+            _write_journal(directory, journal)
+        except Exception as write_error:
+            try:
+                _restore_transaction(directory, journal)
+            except Exception as recovery_error:
+                raise RuntimeError(f'Save failed; recovery copies retained in {directory}: {recovery_error}') from write_error
             raise
-    except Exception as write_error:
-        rollback_errors = []
-        if header_attempted and os.path.exists(rollback_header):
-            try:
-                overwrite_file_preserving_metadata(
-                    header_path, rollback_header, header_metadata
-                )
-            except Exception as error:
-                rollback_errors.append(f"header: {error}")
-        if cgroup_attempted and os.path.exists(rollback_cgroup):
-            try:
-                overwrite_file_preserving_metadata(
-                    target_cgroup, rollback_cgroup, cgroup_metadata
-                )
-            except Exception as error:
-                rollback_errors.append(f"C_group: {error}")
-        if rollback_errors:
-            raise RuntimeError(
-                "Write failed and metadata-safe rollback also failed ("
-                + "; ".join(rollback_errors) + ")"
-            ) from write_error
-        raise
-    finally:
-        for temp_path in temp_paths:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
 
 
 # Decoding
@@ -626,6 +739,8 @@ def validate_cgroup_data(data):
         raise ValueError("C_group uncompressed length mismatch")
     if len(payload) <= 0x1d or payload[:4] != b'gyvl':
         raise ValueError("Invalid C_group magic")
+    if struct.unpack_from('<I', payload, 4)[0] != 1:
+        raise ValueError('Unsupported C_group payload version')
     if payload[0x1d] not in (GROUP_MARKER_NORMAL, GROUP_MARKER_MASK):
         raise ValueError("Invalid C_group root marker")
     if len(payload) < 0x24:
@@ -730,6 +845,7 @@ def parse_optional_transform_record(data, offset, terminator=0x03):
 
 
 def skip_group_to_shape_control(data, offset, shape_marker=0x02):
+    start = offset
     while offset < len(data) and data[offset] in (0x00, 0x01):
         try:
             parse_shape_record(data, offset, shape_marker)
@@ -737,6 +853,10 @@ def skip_group_to_shape_control(data, offset, shape_marker=0x02):
         except ValueError:
             pass
         offset += 1
+    control = data[start:offset]
+    if control and (control[0] != 0 or any(byte != 1 for byte in control[1:])
+                    or len(control) > 129):
+        raise ValueError(f'Invalid group-to-shape control at 0x{start:x}')
     return offset
 
 
@@ -780,7 +900,9 @@ def mark_previous_mask(children, through_groups=False):
     if isinstance(previous, GroupNode) and not through_groups:
         return
     shape = terminal_shape(previous)
-    if shape is not None:
+    # FH6 trailing control bytes can also describe a normal colored shape.
+    # The reference flattener treats only grayscale RGB as a direct mask.
+    if shape is not None and shape.r == shape.g == shape.b:
         shape.is_mask = True
 
 
@@ -895,13 +1017,16 @@ def decode_cgroup_payload(payload):
         raise ValueError("Truncated root child bitmap")
     bitmap = payload[bitmap_start:bitmap_start + blocks]
     generation2 = root_transform_marker == 0x02
-    children, _ = decode_children(
+    children, end = decode_children(
         payload, bitmap_start + blocks, count, bitmap,
         root_marker == GROUP_MARKER_MASK,
         0x01 if generation2 else 0x02,
         0x02 if generation2 else 0x03,
         not generation2,
     )
+    tail = payload[end:]
+    if not tail or (tail[0] not in (0, 1)) or any(byte != 1 for byte in tail[1:]):
+        raise ValueError(f'Unexpected C_group trailing data at 0x{end:x}')
     root = GroupNode(
         children=children,
         is_mask_group=(root_marker == GROUP_MARKER_MASK),

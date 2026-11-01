@@ -1,8 +1,10 @@
 """FH6 save discovery and backup."""
 import datetime
+import csv
 import os
 import re
 import shutil
+import subprocess
 
 from . import cgroup_codec, library, ui
 from .common import DEFAULT_GAMESAVE_DIR
@@ -124,9 +126,12 @@ def get_target_layer_groups(containers_root):
 
         if os.path.exists(c_group_path) and os.path.exists(header_path):
             try:
+                cgroup_codec.recover_pending_cgroup(c_group_path)
                 checked_data = cgroup_codec.read_file_read_only(c_group_path)
-                cgroup_codec.validate_cgroup_data(checked_data)
-            except Exception:
+                cgroup_codec.decode_cgroup_payload(
+                    cgroup_codec.validate_cgroup_data(checked_data))
+            except Exception as error:
+                ui.log(f"Save group unavailable: {folder}: {error}")
                 continue
             title, author = cgroup_codec.parse_header(header_path)
             valid_groups.append({
@@ -141,6 +146,13 @@ def get_target_layer_groups(containers_root):
 
 def inject_cgroup(target_cgroup, root_group):
     try:
+        if os.name == 'nt':
+            result = subprocess.run(['tasklist', '/fo', 'csv', '/nh'],
+                                    capture_output=True, text=True, check=True)
+            processes = [row[0].casefold() for row in csv.reader(result.stdout.splitlines())
+                         if row]
+            if any('forzahorizon6' in name for name in processes):
+                raise RuntimeError('FH6 is running. Close the game before writing its save.')
         cgroup_codec.write_cgroup_file(
             target_cgroup, root_group, library.load_shape_half_extents()
         )

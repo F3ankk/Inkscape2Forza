@@ -2,7 +2,8 @@ build/
 dist/
 ref/
 outdated/
-utiles/
+utiles/*
+!utiles/exec_svg_codec.py
 tests/
 __pycache__/
 *.py[cod]

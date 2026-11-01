@@ -113,4 +113,8 @@ def add_referenced_defs(root, defs, symbol_elements):
                     if name.startswith('data-') or namespace not in (
                             '', SVG_NS, XLINK_NS, 'http://www.w3.org/XML/1998/namespace'):
                         del child.attrib[name]
+            for parent in element.iter():
+                for child in list(parent):
+                    if get_local_name(child) in ('title', 'desc', 'metadata'):
+                        parent.remove(child)
             defs.append(element)

@@ -84,7 +84,7 @@ Inkscape2Forza 是一款独立的辅助工具，不是 Inkscape 扩展。它提�
 
 建议删除新文档中自动创建的空白“图层 1”，直接在文档根节点绘制；确实需要层级结构时使用普通组合。
 
-可以将 PNG/JPG 拖入画布并锁定在底层作为临摹参考。位图、文字和其他非 FH6 符号元素不会写入存档。
+可以将 PNG/JPG 拖入画布并锁定在底层作为临摹参考。导入前请隐藏参考位图；可见的位图、文字和其他非 FH6 符号元素会导致导入停止。
 
 <p align="center">
   <img src="img/guide/06-reference-image.png" alt="使用底图临摹" width="760">
@@ -129,16 +129,17 @@ Inkscape2Forza 是一款独立的辅助工具，不是 Inkscape 扩展。它提�
 - 复制、排序和普通组合
 - `mask_indicator_dark` / `mask_indicator_light` 蒙版图案
 
-透明度会按 SVG 的实际显示结果合并：颜色 Alpha、填充透明度、对象透明度和父组合透明度会相乘。最终完全透明的图层不会写入存档。
+颜色 Alpha、填充透明度和对象透明度会合成为 FH6 图形 Alpha。组合透明度仅在图形不重叠、可以无损展开时导入；否则程序会报错。最终完全透明的图层不会写入存档。
 
 ### 不支持
 
 - 使用路径工具改变符号拓扑
 - FH6 符号库以外的新矢量图形
+- 修改原始 FH6 符号库模板中的 `<symbol>` 定义；导入器只检查引用和 Shape ID，不逐次比较符号内部图形
 - 描边、渐变或任意纹理填充
 - SVG 滤镜、剪切路径等复杂效果
 
-无法识别的元素通常会被忽略，因此 SVG 预览可能与游戏内结果不同。导入前请留意程序显示的“识别元素数”和“有效图层数”。
+无法准确表示的 SVG 元素和效果会使导入停止，并显示原因。导入前请留意程序显示的“识别元素数”和“有效图层数”。
 
 ### 蒙版
 
@@ -186,6 +187,8 @@ Vinylizer 有时会产生完全透明的无效图层，因此转换时需要设�
 </p>
 
 ## 存档写入与云同步
+
+每次导入前，程序会在 `%USERPROFILE%\.inkscape2forza\recovery\` 持久保存原始 `C_group` 和 `header`，并记录事务状态。若上次写入被中断，下次扫描该分组时会自动尝试恢复；恢复失败时会保留副本并禁止继续写入该分组。手动 ZIP 备份仍建议保留。请在确认覆盖前关闭 FH6，并等待云同步结束。
 
 写入时仅修改目标 `C_group` 的图层数据，以及 `header` 中的图层数量。标题、描述、作者等游戏业务元数据保持不变。
 
@@ -244,7 +247,9 @@ Quick workflow:
 5. Create a private placeholder vinyl group in FH6 and leave the in-game editor.
 6. Import the SVG into that group, then reopen and save it once in FH6 to refresh its cache and thumbnail.
 
-The tool supports solid colors, opacity, transforms, mirrors, skew, nested groups and mask patterns. Unsupported SVG objects are ignored. It only lists locally created `LayerGroup_0000_*` groups and does not export downloaded UUID groups.
+The tool supports solid colors, opacity, transforms, mirrors, skew, nested groups and mask patterns. SVG features that cannot be represented accurately are rejected with an explanation. It only lists locally created `LayerGroup_0000_*` groups and does not export downloaded UUID groups.
+
+Every save write stores the original `C_group` and `header` in `%USERPROFILE%\.inkscape2forza\recovery\` before changing either registered file. The app restores an interrupted write when that group is next scanned. A failed restoration leaves the copies in place and blocks further writes to that group. Close FH6 and let cloud sync finish before confirming an import. The 3000 layer limit is this project's safety policy, not a verified game limit.
 
 See the Chinese guide above or the [illustrated Bilibili tutorial](https://www.bilibili.com/opus/1236139150313259015) for detailed instructions.
 
