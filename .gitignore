@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 *.spec
 !inkscape2forza_1.0.0.spec
+!inkscape2forza.spec
 *.egg-info/
 *.egg
 draft*
